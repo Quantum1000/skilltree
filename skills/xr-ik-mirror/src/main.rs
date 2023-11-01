@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use bevy::core_pipeline::clear_color::ClearColorConfig;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::math::vec3;
@@ -15,7 +17,48 @@ use bevy_openxr::xr_input::oculus_touch::OculusController;
 use bevy_openxr::xr_input::{QuatConv, Vec3Conv};
 use bevy_openxr::DefaultXrPlugins;
 
+use std::collections::HashMap;
+
+
+
 const ASSET_FOLDER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/");
+// Much of the IK Algorithm is sourced from [1]: doi:10.1145/3281505.3281529
+// units in meters and radians
+const DEFAULT_HEAD_HEIGHT: f32 = 1.69; // slightly more than the height of the average American (men and women)
+const DEFAULT_NECK_LENGTH: f32 = 0.13; // from [1], very close to what SteroKitTest/Tools/AvatarSeleton.cs uses
+const DEFAULT_SHOULDER_WIDTH: f32 = 0.31; // from [1], very close to what SteroKitTest/Tools/AvatarSeleton.cs uses
+const DEFAULT_SHOULDER_OFFSET: f32 = DEFAULT_SHOULDER_WIDTH/2.;
+const DEFAULT_UPPER_ARM_LEGNTH: f32 = (DEFAULT_HEAD_HEIGHT - DEFAULT_SHOULDER_WIDTH)/4.;
+const DEFAULT_FOREARM_LENGTH: f32 = DEFAULT_UPPER_ARM_LEGNTH;
+const USE_MODEL_PROPORTIONS: bool = true; // if true, overwrites all other default sizes except HEAD_HEIGHT with whatever the avatar is using.
+const DEFAULT_NECK_ROTATE_CONSTRAINT: f32 = 0.45 * PI; // 81 degrees (about what my head can do)
+const HEURISTIC_CHEST_PITCH_HEIGHT_CONSTANT: f32 = 0.7517 * PI; // ~135.3 degrees, from [1]
+const HEURISTIC_CHEST_PITCH_HEAD_CONSTANT: f32 = 0.333; // from [1]
+const HEURISTIC_SHOULDER_SCALING_CONSTANT: f32 = 0.167 * PI; // from [1]
+const DEFAULT_SHOULDER_MOVEMENT_THRESHOLD: f32 = 0.5; // from [1]
+const DEFAULT_SHOULDER_ROTATION_YAW_CONSTRAINT_MIN: f32 = 0.; // from [1], probably wouldn't hurt if it was a few degrees lower.
+const DEFAULT_SHOULDER_ROTATION_YAW_CONSTRAINT_MAX: f32 = 0.183 * PI; // ~33 degrees, from [1]. Seems about right.
+const DEFAULT_SHOULDER_ROTATION_ROLL_CONSTRAINT_MIN: f32 = 0.; // from [1], doesn't seem right these are the same
+const DEFAULT_SHOULDER_ROTATION_ROLL_CONSTRAINT_MAX: f32 = 0.183 * PI; // from [1], doesn't seem right these are the same
+const HEURISTIC_ELBOW_MODEL_BIASES: Vec3 = Vec3 {x: 30., y: 120., z: 65.}; // from [1], derived through manual optimization
+const HEURISTIC_ELBOW_MODEL_WEIGHTS: Vec3 = Vec3 {x: -50., y: -60., z: 260.}; // from [1], derived through manual optimization
+const HEURISTIC_ELBOW_MODEL_OFFSET: f32 = 0.083 * PI; // ~15 degrees, from [1]
+const HEURISTIC_ELBOW_MODEL_CONSTRAINT_MIN: f32 = 0.072 * PI; // ~13 degrees, from [1]
+const HEURISTIC_ELBOW_MODEL_CONSTRAINT_MAX: f32 = 0.972 * PI; // ~175 degrees, from [1]
+const HEURISTIC_ELBOW_SINGULARITY_RADIAL_THRESHOLD: f32 = 0.5; // from [1]
+const HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN: f32 = 0.; // from [1]
+const HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX: f32 = 0.1; // from [1]
+const HEURISTIC_ELBOW_SINGULARITY_VECTOR: Vec3 = Vec3 {x: 0.133, y: -0.443, z: -0.886}; // from [1], probably normalized but I haven't checked; represents a direction.
+// to some extent it feels like the wrist yaw heuristics should come with constraints
+const HEURISTIC_ELBOW_WRIST_YAW_THRESHOLD_LOWER: f32 = -0.25 * PI; // 45 degrees, from [1]
+const HEURISTIC_ELBOW_WRIST_YAW_THRESHOLD_UPPER: f32 = 0.25 * PI; // from [1], mostly makes sense that these are the same.
+const HEURISTIC_ELBOW_WRIST_YAW_SCALING_CONSTANT_LOWER: f32 = -0.75 * PI; // 135 degrees, from [1].
+const HEURISTIC_ELBOW_WRIST_YAW_SCALING_CONSTANT_UPPER: f32 = 0.75 * PI; // 135 degrees, from [1]
+const HEURISTIC_ELBOW_WRIST_ROLL_THRESHOLD_LOWER: f32 = 0.; // 0 degrees, from [1].
+const HEURISTIC_ELBOW_WRIST_ROLL_THRESHOLD_UPPER: f32 = 0.5 * PI; // from [1]
+const HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_LOWER: f32 = -0.3 * PI; // ...600^-1 degrees? aka 54 degrees, from [1]. I'm not convinced the multiplicative inverse of a rotation is a sensible concept, I hope I did the math correctly.
+const HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_UPPER: f32 = 0.6 * PI; // ...300^-1 degrees? aka 108 degrees, from [1]
+
 
 fn main() {
 	color_eyre::install().unwrap();
@@ -29,7 +72,7 @@ fn main() {
 		.add_systems(Startup, setup)
 		.add_systems(
 			Update,
-			(hands, setup_ik, head_sync, body_sync, true_head_sync),
+			(update_ik, setup_ik, true_head_sync),
 		)
 		.run();
 }
@@ -171,25 +214,109 @@ fn setup(
 			..default()
 		},
 		AvatarSetup,
-		Avatar,
 	));
 }
 
-#[derive(Component)]
-pub enum Hand {
-	Left,
-	Right,
-}
 
 #[derive(Component)]
-pub struct Head;
-#[derive(Component)]
-pub struct Avatar;
-#[derive(Component)]
-pub struct Hips;
+pub struct Bone;
 
 #[derive(Component)]
 pub struct TrueHead;
+
+#[derive(Component)]
+pub struct Skeleton {
+	head: Option<Entity>,
+	hips: Option<Entity>,
+	spine: Option<Entity>,
+	chest: Option<Entity>,
+	upper_chest: Option<Entity>,
+	neck: Option<Entity>,
+	left: SkeletonSide,
+	right: SkeletonSide
+}
+struct SkeletonSide {
+	shoulder: Option<Entity>,
+	eye: Option<Entity>,
+	leg: Leg,
+	arm: Arm,
+	foot: Option<Entity>,
+	hand: Option<Entity>,
+}
+struct Leg {
+	upper: Option<Entity>,
+	lower: Option<Entity>
+}
+struct Arm {
+	upper: Option<Entity>,
+	lower: Option<Entity>
+}
+
+impl Skeleton {
+	pub fn new() -> Self {
+		Self {
+			head: None,
+			hips: None,
+			spine: None,
+			chest: None,
+			upper_chest: None,
+			neck: None,
+			left: SkeletonSide {
+				shoulder: None,
+				eye: None,
+				leg: Leg {
+					upper: None,
+					lower: None
+				},
+				arm: Arm {
+					upper: None,
+					lower: None
+				},
+				foot: None,
+				hand: None
+			},
+			right: SkeletonSide {
+				shoulder: None,
+				eye: None,
+				leg: Leg {
+					upper: None,
+					lower: None
+				},
+				arm: Arm {
+					upper: None,
+					lower: None
+				},
+				foot: None,
+				hand: None
+			}
+		}
+	}
+}
+
+
+fn set_head(skeleton: &mut Skeleton, head: Entity) {skeleton.head = Some(head)}
+fn set_hips(skeleton: &mut Skeleton, hips: Entity) {skeleton.hips = Some(hips)}
+fn set_spine(skeleton: &mut Skeleton, spine: Entity) {skeleton.spine = Some(spine)}
+fn set_chest(skeleton: &mut Skeleton, chest: Entity) {skeleton.chest = Some(chest)}
+fn set_upper_chest(skeleton: &mut Skeleton, upper_chest: Entity) {skeleton.upper_chest = Some(upper_chest)}
+fn set_neck(skeleton: &mut Skeleton, neck: Entity) {skeleton.neck = Some(neck)}
+fn set_left_shoulder(skeleton: &mut Skeleton, left_shoulder: Entity) {skeleton.left.shoulder = Some(left_shoulder)}
+fn set_right_shoulder(skeleton: &mut Skeleton, right_shoulder: Entity) {skeleton.right.shoulder = Some(right_shoulder)}
+fn set_left_eye(skeleton: &mut Skeleton, left_eye: Entity) {skeleton.left.eye = Some(left_eye)}
+fn set_right_eye(skeleton: &mut Skeleton, right_eye: Entity) {skeleton.right.eye = Some(right_eye)}
+fn set_left_hand(skeleton: &mut Skeleton, left_hand: Entity) {skeleton.left.hand = Some(left_hand)}
+fn set_right_hand(skeleton: &mut Skeleton, right_hand: Entity) {skeleton.right.hand = Some(right_hand)}
+fn set_left_foot(skeleton: &mut Skeleton, left_foot: Entity) {skeleton.left.foot = Some(left_foot)}
+fn set_right_foot(skeleton: &mut Skeleton, right_foot: Entity) {skeleton.right.foot = Some(right_foot)}
+fn set_left_leg_upper(skeleton: &mut Skeleton, left_leg_upper: Entity) {skeleton.left.leg.upper = Some(left_leg_upper)}
+fn set_right_leg_upper(skeleton: &mut Skeleton, right_leg_upper: Entity) {skeleton.right.leg.upper = Some(right_leg_upper)}
+fn set_left_leg_lower(skeleton: &mut Skeleton, left_leg_lower: Entity) {skeleton.left.leg.lower = Some(left_leg_lower)}
+fn set_right_leg_lower(skeleton: &mut Skeleton, right_leg_lower: Entity) {skeleton.right.leg.lower = Some(right_leg_lower)}
+fn set_left_arm_upper(skeleton: &mut Skeleton, left_arm_upper: Entity) {skeleton.left.arm.upper = Some(left_arm_upper)}
+fn set_right_arm_upper(skeleton: &mut Skeleton, right_arm_upper: Entity) {skeleton.right.arm.upper = Some(right_arm_upper)}
+fn set_left_arm_lower(skeleton: &mut Skeleton, left_arm_lower: Entity) {skeleton.left.arm.lower = Some(left_arm_lower)}
+fn set_right_arm_lower(skeleton: &mut Skeleton, right_arm_lower: Entity) {skeleton.right.arm.lower = Some(right_arm_lower)}
+
 
 fn true_head_sync(
 	mut head_query: Query<(&mut Transform, &TrueHead)>,
@@ -209,107 +336,52 @@ fn true_head_sync(
 	let _ = func();
 }
 
-fn head_sync(
-	mut head_query: Query<(&mut Transform, &Head)>,
-	frame_state: Res<XrFrameState>,
-	xr_input: Res<XrInput>,
-) {
-	let mut func = || -> color_eyre::Result<()> {
-		let frame_state = *frame_state.lock().unwrap();
-		let a = xr_input
-			.head
-			.relate(&xr_input.stage, frame_state.predicted_display_time)?;
-		for (mut head, _) in head_query.iter_mut() {
-			*head = Transform {
-				translation: a.0.pose.position.to_vec3(),
-				rotation: a.0.pose.orientation.to_quat(),
-				scale: Default::default(),
-			};
-		}
-		Ok(())
-	};
-	let _ = func();
-}
 
-fn body_sync(
-	frame_state: Res<XrFrameState>,
-	xr_input: Res<XrInput>,
-	mut avatar: Query<(&mut Transform, &Hips)>,
-) {
-	let mut func = || -> color_eyre::Result<()> {
-		let frame_state = *frame_state.lock().unwrap();
-		let a = xr_input
-			.head
-			.relate(&xr_input.stage, frame_state.predicted_display_time)?;
-		for (mut avatar, _) in avatar.iter_mut() {
-			let head_pos = Transform {
-				translation: a.0.pose.position.to_vec3(),
-				rotation: Quat::IDENTITY,
-				scale: vec3(1.0, 1.0, 1.0),
-			};
-			*avatar = head_pos.with_translation(Vec3 {
-				x: head_pos.translation.x,
-				y: head_pos.translation.y - 0.6,
-				z: head_pos.translation.z,
-			})
-		}
-		Ok(())
-	};
-	let _ = func();
-}
-
-fn hands(
-	mut gizmos: Gizmos,
+fn update_ik(
+	skeleton_query: Query<&Skeleton>,
+	mut transforms: Query<(&mut Transform, With<Bone>)>,
 	oculus_controller: Res<OculusController>,
 	frame_state: Res<XrFrameState>,
 	xr_input: Res<XrInput>,
-	mut hands: Query<(&mut Transform, &Hand)>,
 ) {
+	let mut headset: Option<Transform> = None;
+	let mut left_controller: Option<Transform> = None;
+	let mut right_controller: Option<Transform> = None;
 	let mut func = || -> color_eyre::Result<()> {
 		let frame_state = *frame_state.lock().unwrap();
-
-		let right_controller = oculus_controller
+		let headset_input = xr_input
+			.head
+			.relate(&xr_input.stage, frame_state.predicted_display_time)?;
+		let right_controller_input = oculus_controller
 			.grip_space
 			.right
 			.relate(&xr_input.stage, frame_state.predicted_display_time)?;
-		let left_controller = oculus_controller
+		let left_controller_input = oculus_controller
 			.grip_space
 			.left
 			.relate(&xr_input.stage, frame_state.predicted_display_time)?;
-		gizmos.rect(
-			right_controller.0.pose.position.to_vec3(),
-			right_controller.0.pose.orientation.to_quat(),
-			Vec2::new(0.05, 0.2),
-			Color::YELLOW_GREEN,
-		);
-		gizmos.rect(
-			left_controller.0.pose.position.to_vec3(),
-			left_controller.0.pose.orientation.to_quat(),
-			Vec2::new(0.05, 0.2),
-			Color::YELLOW_GREEN,
-		);
-		for (mut transform, hand) in hands.iter_mut() {
-			match hand {
-				Hand::Left => {
-					*transform = Transform {
-						translation: left_controller.0.pose.position.to_vec3(),
-						rotation: left_controller.0.pose.orientation.to_quat(),
-						scale: Default::default(),
-					};
-				}
-				Hand::Right => {
-					*transform = Transform {
-						translation: right_controller.0.pose.position.to_vec3(),
-						rotation: right_controller.0.pose.orientation.to_quat(),
-						scale: Default::default(),
-					};
-				}
-			}
-		}
+		headset = Some(Transform {
+			translation: headset_input.0.pose.position.to_vec3(),
+			rotation: headset_input.0.pose.orientation.to_quat(),
+			scale: Default::default(),
+		});
+		left_controller = Some(Transform {
+			translation: left_controller_input.0.pose.position.to_vec3(),
+			rotation: left_controller_input.0.pose.orientation.to_quat(),
+			scale: Default::default(),
+		});
+		right_controller = Some(Transform {
+			translation: right_controller_input.0.pose.position.to_vec3(),
+			rotation: right_controller_input.0.pose.orientation.to_quat(),
+			scale: Default::default(),
+		});
 		Ok(())
 	};
-
 	let _ = func();
+	let skeleton = skeleton_query.single();
+	let head_ent = match skeleton.head {Some(e) => e, None => return};
+	let head = match transforms.get_mut(head_ent) {Ok(t) => t, Err(_) => return};
+	
 }
 
 fn setup_ik(
@@ -320,98 +392,56 @@ fn setup_ik(
 	children: Query<&Children>,
 	names: Query<&Name>,
 ) {
+	let skeleton_map: HashMap<&str, fn(&mut Skeleton, Entity)> = HashMap::from([
+		("J_Bip_C_Head", set_head as fn(&mut Skeleton, Entity)),
+		("J_Bip_C_Hips", set_hips as fn(&mut Skeleton, Entity)),
+		("J_Bip_C_Spine", set_spine as fn(&mut Skeleton, Entity)),
+		("J_Bip_C_Chest", set_chest as fn(&mut Skeleton, Entity)),
+		("J_Bip_C_UpperChest", set_upper_chest as fn(&mut Skeleton, Entity)),
+		("J_Bip_C_Neck",set_neck as fn(&mut Skeleton, Entity)),
+		("J_Bip_L_Shoulder",set_left_shoulder as fn(&mut Skeleton, Entity)),
+		("J_Bip_R_Shoulder",set_right_shoulder as fn(&mut Skeleton, Entity)),
+		("J_Adj_L_FaceEye",set_left_eye as fn(&mut Skeleton, Entity)),
+		("J_Adj_R_FaceEye",set_right_eye as fn(&mut Skeleton, Entity)),
+		("J_Bip_L_Hand",set_left_hand as fn(&mut Skeleton, Entity)),
+		("J_Bip_R_Hand",set_right_hand as fn(&mut Skeleton, Entity)),
+		("J_Bip_L_Foot",set_left_foot as fn(&mut Skeleton, Entity)),
+		("J_Bip_R_Foot",set_right_foot as fn(&mut Skeleton, Entity)),
+		("J_Bip_L_UpperLeg",set_left_leg_upper as fn(&mut Skeleton, Entity)),
+		("J_Bip_R_UpperLeg",set_right_leg_upper as fn(&mut Skeleton, Entity)),
+		("J_Bip_L_LowerLeg",set_left_leg_lower as fn(&mut Skeleton, Entity)),
+		("J_Bip_R_LowerLeg",set_right_leg_lower as fn(&mut Skeleton, Entity)),
+		("J_Bip_L_UpperArm",set_left_arm_upper as fn(&mut Skeleton, Entity)),
+		("J_Bip_R_Upperarm",set_right_arm_upper as fn(&mut Skeleton, Entity)),
+		("J_Bip_L_Lowerarm",set_left_arm_lower as fn(&mut Skeleton, Entity)),
+		("J_Bip_R_Lowerarm",set_right_arm_lower as fn(&mut Skeleton, Entity))
+	]);
 	for (entity, _thing) in added_query.iter() {
-		let mut right_hand = None;
-		let mut left_hand = None;
-		let mut head = None;
-		let mut hips = None;
+		let mut skeleton: Skeleton = Skeleton::new();
+		set_head(&mut skeleton, entity);
+
 		// Try to get the entity for the right hand joint.
 		for child in children.iter_descendants(entity) {
 			if let Ok(name) = names.get(child) {
-				if name.as_str() == "J_Bip_R_Hand" {
-					right_hand.replace(child);
-				}
-				if name.as_str() == "J_Bip_L_Hand" {
-					left_hand.replace(child);
-				}
-				if name.as_str() == "J_Bip_C_Head" {
-					head.replace(child);
-				}
-				if name.as_str() == "J_Bip_C_Hips" {
-					hips.replace(child);
+				match skeleton_map.get(name.as_str()) {
+					Some(func) => {
+						func(&mut skeleton, child);
+						commands.entity(child).insert(Bone);
+					},
+					None => {}
 				}
 			}
 		}
-		let right_hand = match right_hand {
-			Some(e) => e,
-			// keep returning until the model fully loads in and we have found the right hand
-			// this is massively inefficient.
-			None => return,
-		};
-		let left_hand = match left_hand {
+		let head = match skeleton.head {
 			Some(e) => e,
 			None => return,
 		};
-		let head = match head {
-			Some(e) => e,
-			None => return,
-		};
-		let hips = match hips {
+		let hips = match skeleton.hips {
 			Some(e) => e,
 			None => return,
 		};
 		commands.entity(entity).remove::<AvatarSetup>();
-
-		commands.entity(hips).insert(Hips);
+		commands.entity(hips).insert(skeleton);
 		commands.entity(head).insert(TrueHead);
-		let target_entity1 = commands
-			.spawn((TransformBundle::default(), Hand::Right))
-			.id();
-		let target_entity2 = commands
-			.spawn((TransformBundle::default(), Hand::Left))
-			.id();
-		let target_entity3 = commands.spawn((TransformBundle::default(), Head)).id();
-		let _hips_entity = commands.spawn((TransformBundle::default(), Hips)).id();
-		// Add an IK constraint to the right hand, using the targets that were created earlier.
-		commands
-			.entity(left_hand)
-			.insert(bevy_mod_inverse_kinematics::IkConstraint {
-				chain_length: 3,
-				iterations: 20,
-				target: target_entity1,
-				pole_target: None,
-				pole_angle: std::f32::consts::FRAC_PI_4,
-				enabled: true,
-			});
-		commands
-			.entity(right_hand)
-			.insert(bevy_mod_inverse_kinematics::IkConstraint {
-				chain_length: 3,
-				iterations: 20,
-				target: target_entity2,
-				pole_target: None,
-				pole_angle: -std::f32::consts::FRAC_PI_4,
-				enabled: true,
-			});
-		commands
-			.entity(head)
-			.insert(bevy_mod_inverse_kinematics::IkConstraint {
-				chain_length: 1,
-				iterations: 20,
-				target: target_entity3,
-				pole_target: None,
-				pole_angle: 180_f32.to_radians(),
-				enabled: true,
-			});
-		// commands
-		// 	.entity(hips)
-		// 	.insert(bevy_mod_inverse_kinematics::IkConstraint {
-		// 		chain_length: 2,
-		// 		iterations: 20,
-		// 		target: hips_entity,
-		// 		pole_target: None,
-		// 		pole_angle: 180_f32.to_radians(),
-		// 		enabled: true,
-		// 	});
 	}
 }

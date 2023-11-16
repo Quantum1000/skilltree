@@ -512,7 +512,7 @@ fn update_ik(
 		root_skeleton = skeleton.recalculate_root(); // this function is likely quite expensive compared to everything else
 		let new_offset = final_head.translation - root_skeleton.head.translation;
 		skeleton.hips.translation = skeleton.hips.translation + new_offset;
-		skeleton.head.rotation = final_head.rotation * root_skeleton.head.rotation.conjugate;
+		skeleton.head.rotation = final_head.rotation * root_skeleton.head.rotation.conjugate();
 		skeleton_sides = [&mut skeleton.left, &mut  skeleton.right];
 		let mut root_skel_sides = [root_skeleton.left, root_skeleton.right];
 		let mut had_shoulders = false;
@@ -522,7 +522,8 @@ fn update_ik(
 			// accounting for scaling is really annoying
 			let upper_leg_length = (root_skel_sides[i].leg.lower.translation-root_skel_sides[i].leg.upper.translation).length_squared();
 			let lower_leg_length = (root_skel_sides[i].foot.translation-root_skel_sides[i].leg.lower.translation).length_squared();
-			let target_foot_pos = root_skel_sides[i].foot.translation.dot(Vec3::new(1., 1., 0.)) + target_foot_z * Vec3::Z;
+			let root_default_foot_transform = default_skel_sides[i].foot.mul_transform(default_skel_sides[i].leg.lower.mul_transform(default_skel_sides[i].leg.upper.mul_transform(skeleton_comp.defaults.hips)));
+			let target_foot_pos = root_default_foot_transform.translation.dot(Vec3::new(1., 1., 0.)) + target_foot_z * Vec3::Z;
 			let foot_hip_vec = target_foot_pos - root_skel_sides[i].leg.upper.translation;
 			let foot_hip_dist = foot_hip_vec.length_squared();
 			let foot_knee_angle = cos_law(upper_leg_length, foot_hip_dist, lower_leg_length);

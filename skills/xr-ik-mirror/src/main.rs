@@ -522,9 +522,10 @@ fn update_ik(
 			// accounting for scaling is really annoying
 			let upper_leg_length = (root_skel_sides[i].leg.lower.translation-root_skel_sides[i].leg.upper.translation).length_squared();
 			let lower_leg_length = (root_skel_sides[i].foot.translation-root_skel_sides[i].leg.lower.translation).length_squared();
-			let root_default_foot_transform = default_skel_sides[i].foot.mul_transform(default_skel_sides[i].leg.lower.mul_transform(default_skel_sides[i].leg.upper.mul_transform(skeleton_comp.defaults.hips)));
-			let target_foot_pos = root_default_foot_transform.translation.dot(Vec3::new(1., 1., 0.)) + target_foot_z * Vec3::Z;
-			let foot_hip_vec = target_foot_pos - root_skel_sides[i].leg.upper.translation;
+			let target_foot_pos = default_skel_sides[i].foot.mul_transform(default_skel_sides[i].leg.lower.mul_transform(
+				default_skel_sides[i].leg.upper.mul_transform(skeleton_comp.defaults.hips)
+			)).translation * Vec3::new(1., 1., 0.) + target_foot_z * Vec3::Z;
+			let foot_hip_vec: Vec3 = target_foot_pos - root_skel_sides[i].leg.upper.translation;
 			let foot_hip_dist = foot_hip_vec.length_squared();
 			let foot_knee_angle = cos_law(upper_leg_length, foot_hip_dist, lower_leg_length);
 			let target_knee_pos = Quat::from_axis_angle(Vec3::NEG_Z.cross(foot_hip_vec), foot_knee_angle).mul_vec3(foot_hip_vec).normalize()*upper_leg_length;

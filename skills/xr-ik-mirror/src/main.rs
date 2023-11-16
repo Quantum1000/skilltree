@@ -512,7 +512,7 @@ fn update_ik(
 		root_skeleton = skeleton.recalculate_root(); // this function is likely quite expensive compared to everything else
 		let new_offset = final_head.translation - root_skeleton.head.translation;
 		skeleton.hips.translation = skeleton.hips.translation + new_offset;
-		skeleton.head.rotation = final_head.rotation;
+		skeleton.head.rotation = final_head.rotation * root_skeleton.head.rotation.conjugate;
 		skeleton_sides = [&mut skeleton.left, &mut  skeleton.right];
 		let mut root_skel_sides = [root_skeleton.left, root_skeleton.right];
 		let mut had_shoulders = false;

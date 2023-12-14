@@ -3,24 +3,25 @@ use bevy::core_pipeline::clear_color::ClearColorConfig;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::EulerRot::XYZ;
 use bevy::prelude::*;
+use bevy::utils::Duration;
 use bevy::render::camera::RenderTarget;
 use bevy::render::render_resource::{
 	Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
 };
 use bevy::transform::components::Transform;
 
-use bevy_openxr::input::XrInput;
-use bevy_openxr::resources::XrFrameState;
-use bevy_openxr::xr_input::oculus_touch::OculusController;
-use bevy_openxr::xr_input::{QuatConv, Vec3Conv};
-use bevy_openxr::DefaultXrPlugins;
-
+use bevy_oxr::input::XrInput;
+use bevy_oxr::resources::XrFrameState;
+use bevy_oxr::xr_input::oculus_touch::OculusController;
+use bevy_oxr::xr_input::{QuatConv, Vec3Conv};
+use bevy_oxr::DefaultXrPlugins;
+use bevy::time::common_conditions::on_timer;
 use std::collections::HashMap;
 
 use color_eyre::eyre;
+use eyre::eyre;
 
 
-const ASSET_FOLDER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/");
 // Much of the IK Algorithm is sourced from [1]: doi:10.1145/3281505.3281529
 // units in meters and radians
 const HEAD_HEIGHT_FACTOR: f32 = 1.15; // a factor for converting from the height of the avatar's head bone transform to the top of their head
@@ -62,11 +63,14 @@ fn main() {
 		.add_plugins(DefaultXrPlugins)
 		.add_plugins(LogDiagnosticsPlugin::default())
 		.add_plugins(FrameTimeDiagnosticsPlugin)
-		.add_plugins(bevy_mod_inverse_kinematics::InverseKinematicsPlugin)
 		.add_systems(Startup, setup)
 		.add_systems(
 			Update,
-			(update_ik, setup_ik),
+			update_ik,
+		)
+		.add_systems(
+			Update,
+			setup_ik.run_if(on_timer(Duration::from_secs_f32(0.5))),
 		)
 		.run();
 }
@@ -83,7 +87,7 @@ fn setup(
 	mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
 	let bevy_mirror_dwelling_img: Handle<Image> =
-		assets.load(&(ASSET_FOLDER.to_string() + "bevy_mirror_dwelling.png"));
+		assets.load("bevy_mirror_dwelling.png");
 	commands.spawn(PbrBundle {
 		mesh: meshes.add(shape::Cube::default().into()),
 		material: materials.add(StandardMaterial {
@@ -201,7 +205,7 @@ fn setup(
 	},));
 	commands.spawn((
 		SceneBundle {
-			scene: assets.load(&(ASSET_FOLDER.to_string() + "/malek.gltf#Scene0")),
+			scene: assets.load("malek.gltf#Scene0"),
 			transform: Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(
 				Quat::from_euler(EulerRot::XYZ, 0.0, 0.0_f32.to_radians(), 0.0),
 			),
@@ -223,6 +227,7 @@ pub struct SkeletonComponent {
 	entities: [Option<Entity>; SKELETON_ARR_LEN],
 	height: f32,
 	defaults: Skeleton,
+	root_defaults: Skeleton,
 }
 
 const HEAD: usize = 0;
@@ -247,7 +252,7 @@ const RIGHT_LEG_UPPER: usize = 18;
 const RIGHT_LEG_LOWER: usize = 19;
 const RIGHT_ARM_UPPER: usize = 20;
 const RIGHT_ARM_LOWER: usize = 21;
-const SKELETON_ARR_LEN: usize = 23;
+const SKELETON_ARR_LEN: usize = 22;
 
 #[derive(Copy, Clone)]
 struct Skeleton{
@@ -280,38 +285,38 @@ struct Limb {
 impl Skeleton {
 	pub fn new(skeleton: [Option<Transform>; SKELETON_ARR_LEN]) -> color_eyre::Result<Self> {
 		Ok(Self {
-			head: skeleton[HEAD].ok_or(eyre::Report::msg("bad Skeleton"))?,
-			hips: skeleton[HIPS].ok_or(eyre::Report::msg("bad Skeleton"))?,
-			spine: skeleton[SPINE].ok_or(eyre::Report::msg("bad Skeleton"))?,
+			head: skeleton[HEAD].ok_or(eyre!("bad Skeleton, missing head"))?,
+			hips: skeleton[HIPS].ok_or(eyre!("bad Skeleton, missing hips"))?,
+			spine: skeleton[SPINE].ok_or(eyre!("bad Skeleton, missing spine"))?,
 			chest: skeleton[CHEST],
 			upper_chest: skeleton[UPPER_CHEST],
 			neck: skeleton[NECK],
 			left: SkeletonSide {
 				shoulder: skeleton[LEFT_SHOULDER],
 				eye: skeleton[LEFT_EYE],
-				foot: skeleton[LEFT_FOOT].ok_or(eyre::Report::msg("bad Skeleton"))?,
-				hand: skeleton[LEFT_HAND].ok_or(eyre::Report::msg("bad Skeleton"))?,
+				foot: skeleton[LEFT_FOOT].ok_or(eyre!("bad Skeleton, missing left foot"))?,
+				hand: skeleton[LEFT_HAND].ok_or(eyre!("bad Skeleton, missing left hand"))?,
 				leg: Limb {
-					upper: skeleton[LEFT_LEG_UPPER].ok_or(eyre::Report::msg("bad Skeleton"))?,
-					lower: skeleton[LEFT_LEG_LOWER].ok_or(eyre::Report::msg("bad Skeleton"))?,
+					upper: skeleton[LEFT_LEG_UPPER].ok_or(eyre!("bad Skeleton, missing upper left leg"))?,
+					lower: skeleton[LEFT_LEG_LOWER].ok_or(eyre!("bad Skeleton, missing lower left leg"))?,
 				},
 				arm: Limb {
-					upper: skeleton[LEFT_ARM_UPPER].ok_or(eyre::Report::msg("bad Skeleton"))?,
-					lower: skeleton[LEFT_LEG_LOWER].ok_or(eyre::Report::msg("bad Skeleton"))?,
+					upper: skeleton[LEFT_ARM_UPPER].ok_or(eyre!("bad Skeleton, missing upper left arm"))?,
+					lower: skeleton[LEFT_ARM_LOWER].ok_or(eyre!("bad Skeleton, missing lower left leg"))?,
 				},
 			},
 			right: SkeletonSide {
 				shoulder: skeleton[RIGHT_SHOULDER],
 				eye: skeleton[RIGHT_EYE],
-				foot: skeleton[RIGHT_FOOT].ok_or(eyre::Report::msg("bad Skeleton"))?,
-				hand: skeleton[RIGHT_HAND].ok_or(eyre::Report::msg("bad Skeleton"))?,
+				foot: skeleton[RIGHT_FOOT].ok_or(eyre!("bad Skeleton, missing right foot"))?,
+				hand: skeleton[RIGHT_HAND].ok_or(eyre!("bad Skeleton, missing right hand"))?,
 				leg: Limb {
-					upper: skeleton[RIGHT_LEG_UPPER].ok_or(eyre::Report::msg("bad Skeleton"))?,
-					lower: skeleton[RIGHT_LEG_LOWER].ok_or(eyre::Report::msg("bad Skeleton"))?,
+					upper: skeleton[RIGHT_LEG_UPPER].ok_or(eyre!("bad Skeleton, missing upper right leg"))?,
+					lower: skeleton[RIGHT_LEG_LOWER].ok_or(eyre!("bad Skeleton, missing lower right leg"))?,
 				},
 				arm: Limb {
-					upper: skeleton[RIGHT_ARM_UPPER].ok_or(eyre::Report::msg("bad Skeleton"))?,
-					lower: skeleton[RIGHT_ARM_LOWER].ok_or(eyre::Report::msg("bad Skeleton"))?,
+					upper: skeleton[RIGHT_ARM_UPPER].ok_or(eyre!("bad Skeleton, missing upper right arm"))?,
+					lower: skeleton[RIGHT_ARM_LOWER].ok_or(eyre!("bad Skeleton, missing lower right arm"))?,
 				},
 			}
 		})
@@ -343,17 +348,17 @@ impl Skeleton {
 		skeleton[RIGHT_LEG_LOWER] = Some(self.right.leg.lower);
 		skeleton
 	}
-	pub fn recalculate_root(mut self) -> Self{
-		self.spine = self.spine.mul_transform(self.hips);
+	pub fn recalculate_root(mut self) -> Self {
+		self.spine = self.hips.mul_transform(self.spine);
 		let mut highest_root = self.spine;
 		match self.chest {
 			Some(t) => {
-				let result = t.mul_transform(self.spine);
+				let result = self.spine.mul_transform(t);
 				self.chest = Some(result);
 				highest_root = result;
 				match self.upper_chest {
-					Some(t) => {
-						let result = t.mul_transform(highest_root);
+					Some(t2) => {
+						let result = highest_root.mul_transform(t2);
 						self.upper_chest = Some(result);
 						highest_root = result;
 					},
@@ -365,13 +370,13 @@ impl Skeleton {
 		let mut head_root = highest_root;
 		match self.neck {
 			Some(t) => {
-				let result = t.mul_transform(highest_root);
+				let result = highest_root.mul_transform(t);
 				self.neck = Some(result);
 				head_root = result;
 			},
 			None => {}
 		}
-		self.head = self.head.mul_transform(head_root);
+		self.head = head_root.mul_transform(self.head);
 		self.left = self.left.recalculate_root(self.head, self.hips, highest_root);
 		self.right = self.right.recalculate_root(self.head, self.hips, highest_root);
 		self
@@ -381,12 +386,12 @@ impl Skeleton {
 impl SkeletonSide {
 	pub fn recalculate_root(mut self, head: Transform, hips: Transform, mut highest_root: Transform) -> Self {
 		match self.eye {
-			Some(t) => self.eye = Some(t.mul_transform(head)),
+			Some(t) => self.eye = Some(head.mul_transform(t)),
 			None => {}
 		}
 		match self.shoulder {
 			Some(t) => {
-				let result = t.mul_transform(highest_root);
+				let result = highest_root.mul_transform(t);
 				self.shoulder = Some(result);
 				highest_root = result;
 			},
@@ -394,16 +399,16 @@ impl SkeletonSide {
 		}
 		self.arm = self.arm.recalculate_root(highest_root);
 		self.leg = self.leg.recalculate_root(hips);
-		self.hand = self.hand.mul_transform(self.arm.lower);
-		self.foot = self.foot.mul_transform(self.leg.lower);
+		self.hand = self.arm.lower.mul_transform( self.hand);
+		self.foot = self.leg.lower.mul_transform(self.foot );
 		self
 	}
 }
 
 impl Limb {
 	pub fn recalculate_root(mut self, root: Transform) -> Self {
-		self.upper = self.upper.mul_transform(root);
-		self.lower = self.lower.mul_transform(self.upper);
+		self.upper = root.mul_transform(self.upper);
+		self.lower = self.upper.mul_transform(self.lower) ;
 		self
 	}
 }
@@ -418,6 +423,12 @@ fn update_ik(
 	xr_input: Res<XrInput>,
 ) {
 	let mut func = || -> color_eyre::Result<()> {
+		// system should loop harmlessly until a SkeletonComponent is added
+		let mut skeleton_query_count = 0;
+		for _ in skeleton_query.iter() {
+			skeleton_query_count += 1;
+		}
+		if skeleton_query_count == 0 {return Ok(())}
 		let skeleton_query_out = skeleton_query.single();
 		let root = skeleton_query_out.0;
 		let skeleton_comp = skeleton_query_out.1;
@@ -427,92 +438,168 @@ fn update_ik(
 			.head
 			.relate(&xr_input.stage, frame_state.predicted_display_time);
 		let right_controller_input = oculus_controller
-			.grip_space
+			.grip_space.as_ref().unwrap()
 			.right
 			.relate(&xr_input.stage, frame_state.predicted_display_time);
 		let left_controller_input = oculus_controller
-			.grip_space
+			.grip_space.as_ref().unwrap()
 			.left
 			.relate(&xr_input.stage, frame_state.predicted_display_time);
 		// read the state of the skeleton from the transforms
 		let mut skeleton_transform_array: [Option<Transform>; SKELETON_ARR_LEN] = Default::default();
 		let mut skeleton_root_array: [Option<Transform>; SKELETON_ARR_LEN] = Default::default();
+		let mut found_nan: bool = false;
+		let test = true;
+		fn contains_nan(input: Vec3) -> bool {
+			input.x.is_nan() || input.y.is_nan() || input.z.is_nan()
+		}
+		fn quat_contains_nan(input: Quat) -> bool {
+			input.x.is_nan() || input.y.is_nan() || input.z.is_nan() || input.w.is_nan()
+		}
 		for i in 0..SKELETON_ARR_LEN {
 			let entity = match skeleton_comp.entities[i] {Some(e) => e, None => continue};
 			skeleton_transform_array[i] = Some(*transforms.get(entity)?.0);
 			skeleton_root_array[i] = Some(transforms.get(entity)?.1.reparented_to(root));
+			if test {
+				match skeleton_transform_array[i] {
+					Some(t) => {
+						if contains_nan(t.translation) {
+							println!("Incoming transform {:?} contained a NaN in translation", i);
+							found_nan = true;
+						}
+						if quat_contains_nan(t.rotation) {
+							println!("Incoming transform {:?} contained a NaN in rotation", i);
+							found_nan = true;
+						}
+						if contains_nan(t.scale) {
+							println!("Incoming transform {:?} contained a NaN in scale", i);
+							found_nan = true;
+						}
+					},
+					None => {}
+				}
+			}
+			match skeleton_root_array[i] {
+				Some(t) => if t.translation.x.is_nan() || t.translation.y.is_nan() || t.translation.z.is_nan() {
+					println!("Incoming root transform {:?} contained a NaN", i);
+					found_nan = true;
+				},
+				None => {}
+			}
+		}
+		if found_nan {
+			panic!("Found a NaN, details precede. Exiting.")
 		}
 		let mut skeleton = Skeleton::new(skeleton_transform_array)?;
 		let mut root_skeleton = Skeleton::new(skeleton_root_array)?;
 		// At this point, the skeleton is known to be valid; next, handle VR input
-		let final_head = match headset_input {
-			Ok(input) => Transform {
-				translation: input.0.pose.position.to_vec3()*height_factor,
-				rotation: input.0.pose.orientation.to_quat(),
-				scale: skeleton.head.scale,
+		let testing_input_override = false;
+		let final_head = if testing_input_override {
+			Transform::IDENTITY.with_translation(Vec3::Y * 1.3 * height_factor)
+		} else {match headset_input {
+			Ok(input) => {
+				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
+					Transform {
+						translation: input.0.pose.position.to_vec3()*height_factor,
+						rotation: input.0.pose.orientation.to_quat(),
+						scale: skeleton.head.scale,
+					}
+				}
+				else {
+					root_skeleton.head
+				}
 			},
 			Err(_) => root_skeleton.head
-		};
-		let final_left_hand = match left_controller_input {
-			Ok(input) => Transform {
-				translation: input.0.pose.position.to_vec3()*height_factor,
-				rotation: input.0.pose.orientation.to_quat(),
-				scale: skeleton.left.hand.scale,
+		}};
+		let final_left_hand = if false {
+			Transform::IDENTITY.with_translation(Vec3::new(-0.2, 0.8, -0.1)*height_factor)
+		} else {match left_controller_input {
+			Ok(input) => {
+				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
+					Transform {
+						translation: input.0.pose.position.to_vec3()*height_factor,
+						rotation: input.0.pose.orientation.to_quat(),
+						scale: skeleton.left.hand.scale,
+					}
+				}
+				else {
+					root_skeleton.left.hand
+				}
 			},
 			Err(_) => root_skeleton.left.hand
-		};
-		let final_right_hand = match right_controller_input {
-			Ok(input) => Transform {
-				translation: input.0.pose.position.to_vec3()*height_factor,
-				rotation: input.0.pose.orientation.to_quat(),
-				scale: skeleton.right.hand.scale,
+		}};
+		let final_right_hand =  if false {
+			Transform::IDENTITY.with_translation(Vec3::new(0.2, 0.8, -0.1)*height_factor)
+		} else {match right_controller_input {
+			Ok(input) => {
+				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
+					Transform {
+						translation: input.0.pose.position.to_vec3()*height_factor,
+						rotation: input.0.pose.orientation.to_quat(),
+						scale: skeleton.right.hand.scale,
+					}
+				}
+				else {
+					root_skeleton.right.hand
+				}
 			},
 			Err(_) => root_skeleton.right.hand
-		};
-		// note: solves for the angle. a, b and c should be length squared
+		}};
+		// note: solves for the angle
 		fn cos_law(a: f32, b:f32, c:f32) -> f32 {
 			// a+b>c must be true
-			((a+b-c) / (2. * a.sqrt() * b.sqrt())).acos()
+			((a.powi(2)+b.powi(2)-c.powi(2)) / (2.*a*b)).acos()
 		}
 		// now everything is set up and IK logic can begin.
+		let head_rot_euler = (skeleton_comp.root_defaults.head.rotation.inverse() * final_head.rotation).to_euler(EulerRot::YXZ);
 		let mut chest_pitch = (skeleton_comp.height - final_head.translation.y) / skeleton_comp.height;
-		let mut neck_pitch = chest_pitch * (HEURISTIC_NECK_PITCH_SCALE_CONSTANT + HEURISTIC_NECK_PITCH_HEAD_CONSTANT * final_head.rotation.to_euler(EulerRot::YXZ).1);
-		chest_pitch *= HEURISTIC_NECK_PITCH_SCALE_CONSTANT + HEURISTIC_CHEST_PITCH_HEAD_CONSTANT * final_head.rotation.to_euler(EulerRot::YXZ).1;
+		let mut neck_pitch = chest_pitch * (HEURISTIC_NECK_PITCH_SCALE_CONSTANT + HEURISTIC_NECK_PITCH_HEAD_CONSTANT * head_rot_euler.1);
+		chest_pitch *= HEURISTIC_NECK_PITCH_SCALE_CONSTANT + HEURISTIC_CHEST_PITCH_HEAD_CONSTANT * head_rot_euler.1;
 		neck_pitch -= chest_pitch; // Rotations propagate through transforms
+		match skeleton.neck {
+			Some(mut t) => {
+				let neck_rot = Quat::from_euler(EulerRot::YXZ, 0., -neck_pitch.clamp(0.,PI/4.), 0.) * 
+				skeleton_comp.defaults.neck.ok_or(eyre!("wtf how, Skeleton modified in ways it shouldn't be"))?.rotation;
+				t.rotation = neck_rot.normalize();
+			},
+			None => {}
+		}
 		let l_hand_flat = Vec2::new(final_left_hand.translation.x, final_left_hand.translation.z);
 		let r_hand_flat = Vec2::new(final_right_hand.translation.x, final_right_hand.translation.z);
 		let mut hand_dir = l_hand_flat + r_hand_flat;
 		let head_rot = final_head.forward();
 		let head_rot_flat = Vec2::new(head_rot.x, head_rot.z);
-		if hand_dir.angle_between(head_rot_flat).abs() > 90./180. * PI {
+		if hand_dir.length_squared() < 0.00001 {
+			hand_dir = head_rot_flat;
+		}
+		else if hand_dir.angle_between(head_rot_flat).abs() > 90./180. * PI {
 			hand_dir *= -1.;
 		}
-		let chest_yaw = (hand_dir).angle_between(Vec2::X);
-		skeleton.hips.rotation = Quat::from_euler(EulerRot::YXZ, chest_yaw, chest_pitch, 0.);
-		// more logic needs to be moved in here, this is currently inefficient when the model is underactuated
-		match skeleton.neck {
-			Some(mut t) => {
-				let neck_rot = Quat::from_euler(EulerRot::YXZ, 0., neck_pitch, 0.);
-				t.rotation = neck_rot;
-			},
-			None => {}
-		}
+		let chest_yaw = (hand_dir * -1.).angle_between(Vec2::Y);
+		let new_hip_rot = Quat::from_euler(EulerRot::YXZ, chest_yaw, -chest_pitch.clamp(0.,PI/2.), 0.);
+		if new_hip_rot.x.is_nan() {panic!("Calculating the hip rotation from euler failed, created NaN")};
+		skeleton.hips.rotation = (new_hip_rot * skeleton_comp.defaults.hips.rotation).normalize();
 		let final_hands = [final_left_hand, final_right_hand];
 		let mut skeleton_sides = [&mut skeleton.left,&mut  skeleton.right];
 		let default_skel_sides = [skeleton_comp.defaults.left, skeleton_comp.defaults.right];
+		let root_default_skel_sides = [skeleton_comp.root_defaults.left, skeleton_comp.root_defaults.right];
 		// return shoulders to neutral position
 		for i in 0..2 {
 			match skeleton_sides[i].shoulder {
-				Some(mut t) => t.rotation = default_skel_sides[i].shoulder.ok_or(eyre::Report::msg("wtf how, Skeleton modified in ways it shouldn't be"))?.rotation,
+				Some(mut t) => t.rotation = default_skel_sides[i].shoulder.ok_or(eyre!("wtf how, Skeleton modified in ways it shouldn't be"))?.rotation,
 				None => {}
 			}
 		}
 		// calculate position of shoulders and head relative to root
 		drop(skeleton_sides);
+		skeleton.head.rotation = skeleton_comp.defaults.head.rotation;
 		root_skeleton = skeleton.recalculate_root(); // this function is likely quite expensive compared to everything else
 		let new_offset = final_head.translation - root_skeleton.head.translation;
 		skeleton.hips.translation = skeleton.hips.translation + new_offset;
-		skeleton.head.rotation = final_head.rotation * root_skeleton.head.rotation.conjugate();
+		skeleton.head.rotation = (root_skeleton.head.rotation.inverse() * final_head.rotation).normalize();
+		if skeleton.hips.translation.x.is_nan() {
+			panic!("something got set to NaN somehow")
+		}
 		skeleton_sides = [&mut skeleton.left, &mut  skeleton.right];
 		let mut root_skel_sides = [root_skeleton.left, root_skeleton.right];
 		let mut had_shoulders = false;
@@ -520,26 +607,38 @@ fn update_ik(
 			// the spine is assumed to be very close to the center of mass
 			let target_foot_z = root_skeleton.spine.translation.z;
 			// accounting for scaling is really annoying
-			let upper_leg_length = (root_skel_sides[i].leg.lower.translation-root_skel_sides[i].leg.upper.translation).length_squared();
-			let lower_leg_length = (root_skel_sides[i].foot.translation-root_skel_sides[i].leg.lower.translation).length_squared();
-			let target_foot_pos = default_skel_sides[i].foot.mul_transform(default_skel_sides[i].leg.lower.mul_transform(
-				default_skel_sides[i].leg.upper.mul_transform(skeleton_comp.defaults.hips)
-			)).translation * Vec3::new(1., 1., 0.) + target_foot_z * Vec3::Z;
-			let foot_hip_vec: Vec3 = target_foot_pos - root_skel_sides[i].leg.upper.translation;
-			let foot_hip_dist = foot_hip_vec.length_squared();
+			let upper_leg_length = (root_skel_sides[i].leg.lower.translation-root_skel_sides[i].leg.upper.translation).length();
+			let lower_leg_length = (root_skel_sides[i].foot.translation-root_skel_sides[i].leg.lower.translation).length();
+			let target_foot_pos = root_default_skel_sides[i].foot.translation * Vec3::new(1., 1., 0.) + target_foot_z * Vec3::Z;
+			let target_foot = root_default_skel_sides[i].foot.with_translation(target_foot_pos);
+			let mut foot_hip_vec = target_foot_pos - root_skel_sides[i].leg.upper.translation;
+			let mut foot_hip_dist = foot_hip_vec.length();
+			let combined_leg_length = (upper_leg_length+lower_leg_length)*0.999;
+			if foot_hip_dist > combined_leg_length {
+				foot_hip_dist = combined_leg_length;
+				foot_hip_vec = foot_hip_vec.normalize()*combined_leg_length
+			}
+			let minimum_combined_leg_length = (upper_leg_length-lower_leg_length).abs()*1.0001;
+			if foot_hip_dist < minimum_combined_leg_length {
+				foot_hip_dist = minimum_combined_leg_length;
+				foot_hip_vec = foot_hip_vec.normalize()*minimum_combined_leg_length
+			}
 			let foot_knee_angle = cos_law(upper_leg_length, foot_hip_dist, lower_leg_length);
-			let target_knee_pos = Quat::from_axis_angle(Vec3::NEG_Z.cross(foot_hip_vec), foot_knee_angle).mul_vec3(foot_hip_vec).normalize()*upper_leg_length;
-			let curr_knee_rel_u_leg = GlobalTransform::from(root_skel_sides[i].leg.lower).reparented_to(&GlobalTransform::from(root_skel_sides[i].leg.upper)).translation;
-			let knee_corrective_rot = Quat::from_rotation_arc(curr_knee_rel_u_leg, target_knee_pos);
-			skeleton_sides[i].leg.upper.rotate(knee_corrective_rot);
-			let updated_root_upper_leg = root_skel_sides[i].leg.upper.with_rotation(root_skel_sides[i].leg.upper.rotation * knee_corrective_rot);
-			let curr_root_lower_leg = skeleton_sides[i].leg.lower.mul_transform(updated_root_upper_leg);
-			let target_foot_rel_knee = GlobalTransform::from(root_skel_sides[i].foot.with_translation(target_foot_pos)).reparented_to(&GlobalTransform::from(curr_root_lower_leg));
-			let foot_corrective_rot = Quat::from_rotation_arc(skeleton_sides[i].foot.translation, target_foot_rel_knee.translation);
-			skeleton_sides[i].leg.lower.rotate(foot_corrective_rot);
-			let updated_root_lower_leg = curr_root_lower_leg.with_rotation(root_skel_sides[i].leg.lower.rotation * foot_corrective_rot);
-			let curr_root_foot = skeleton_sides[i].foot.mul_transform(updated_root_lower_leg);
-			skeleton_sides[i].hand.rotate(curr_root_foot.rotation.conjugate() * skeleton_sides[i].foot.rotation);
+			if foot_knee_angle.is_nan() {
+				panic!("leg cos law failed")
+			}
+			let target_knee_pos = Quat::from_axis_angle(Vec3::NEG_Z.cross(foot_hip_vec), -foot_knee_angle).mul_vec3(foot_hip_vec).normalize();
+			let uleg_rot = Quat::from_rotation_arc(skeleton_sides[i].leg.lower.translation.normalize(), target_knee_pos);
+			if uleg_rot.x.is_nan() {
+				panic!("knee rotation calculation failed")
+			}
+			skeleton_sides[i].leg.upper.rotation = (skeleton.hips.rotation.inverse() * uleg_rot).normalize();
+			let updated_root_upper_leg = root_skel_sides[i].leg.upper.with_rotation(uleg_rot);
+			let curr_root_lower_leg = skeleton_sides[i].leg.lower.with_rotation(Quat::IDENTITY).mul_transform(updated_root_upper_leg);
+			let target_foot_rel_knee = GlobalTransform::from(target_foot).reparented_to(&GlobalTransform::from(curr_root_lower_leg));
+			let lleg_rot = Quat::from_rotation_arc(skeleton_sides[i].foot.translation.normalize(), target_foot_rel_knee.translation.normalize());
+			skeleton_sides[i].leg.lower.rotation = (updated_root_upper_leg.rotation.inverse() * lleg_rot).normalize();
+			skeleton_sides[i].foot.rotation = (lleg_rot.inverse() * root_default_skel_sides[i].foot.rotation).normalize();
 			match skeleton_sides[i].shoulder {
 				Some(mut t) => {
 					let shoulder_hand = root_skel_sides[i].arm.upper.translation + new_offset - final_hands[i].translation;
@@ -552,7 +651,7 @@ fn update_ik(
 					let mut shoulder_roll = calc_shoulder_angle(skeleton.spine.up());
 					shoulder_roll = shoulder_roll.clamp(DEFAULT_SHOULDER_ROTATION_ROLL_CONSTRAINT_MIN, DEFAULT_SHOULDER_ROTATION_ROLL_CONSTRAINT_MAX);
 					let shoulder_rot = Quat::from_euler(EulerRot::YXZ, shoulder_yaw, 0., shoulder_roll);
-					t.rotation = shoulder_rot;
+					t.rotation = shoulder_rot.normalize();
 					had_shoulders = true;
 				},
 				None => {}
@@ -564,37 +663,64 @@ fn update_ik(
 			skeleton_sides = [&mut skeleton.left, &mut  skeleton.right];
 			root_skel_sides = [root_skeleton.left, root_skeleton.right];
 		}
+		let highest_root = match root_skeleton.upper_chest {
+			Some(t) => t,
+			None => match root_skeleton.chest {
+				Some(t) => t,
+				None => root_skeleton.spine
+			}
+		};
 		for i in 0..2 {
+			let arm_highest_root = match root_skel_sides[i].shoulder {
+				Some(t) =>  t,
+				None => {highest_root}
+			};
 			let up = match root_skeleton.neck {
 				Some(t) => t.up(),
-				None => root_skeleton.spine.up()
+				None => highest_root.up()
 			};
 			let forward = match root_skeleton.neck {
 				Some(t) => t.forward(),
-				None => root_skeleton.spine.forward()
+				None => highest_root.forward()
 			};
-			// only vaguely shoulder-like
+			// only vaguely shoulder-like. It is, at least, in the right place.
 			let virtual_shoulder = root_skel_sides[i].arm.upper.looking_to(forward, up).with_scale(Vec3::ONE);
 			// I currently am not confident the following elbow code works correctly
-			let final_hand_rel_shoulder = virtual_shoulder.compute_affine().inverse().transform_point3(final_hands[i].translation);
+			let mut final_hand_rel_v_shoulder = GlobalTransform::from(final_hands[i]).reparented_to(&GlobalTransform::from(virtual_shoulder)).translation;
+			// accounting for scaling is fucking annoying, but technically the VRM spec allows it!
+			let upper_arm_length = (root_skel_sides[i].arm.lower.translation - root_skel_sides[i].arm.upper.translation).length();
+			let forearm_length = (root_skel_sides[i].hand.translation - root_skel_sides[i].arm.lower.translation).length();
+			let mut shoulder_hand_length = final_hand_rel_v_shoulder.length();
+			// don't want the game to crash if the player's hand gets slightly further than expected from their body
+			let combined_arm_length = (upper_arm_length+forearm_length)*0.999;
+			if shoulder_hand_length > combined_arm_length {
+				shoulder_hand_length = combined_arm_length;
+				final_hand_rel_v_shoulder = final_hand_rel_v_shoulder.normalize()*combined_arm_length
+			}
+			// Avatars can have somewhat weird proportions that prevent them from touching their shoulders
+			let minimum_combined_arm_length = (upper_arm_length-forearm_length).abs()*1.0001;
+			if shoulder_hand_length < minimum_combined_arm_length {
+				shoulder_hand_length = minimum_combined_arm_length;
+				final_hand_rel_v_shoulder = final_hand_rel_v_shoulder.normalize()*minimum_combined_arm_length;
+			}
 			// these next two lines should account for scale, probably?
 			// the coordinate system is unspecified in the paper afaik, I can only pray this works ig
-			let model_out = final_hand_rel_shoulder.normalize().mul_add(HEURISTIC_ELBOW_MODEL_WEIGHTS, HEURISTIC_ELBOW_MODEL_BIASES).clamp(Vec3::ZERO, Vec3::INFINITY).dot(Vec3::ONE);
+			let model_out = final_hand_rel_v_shoulder.normalize().mul_add(HEURISTIC_ELBOW_MODEL_WEIGHTS, HEURISTIC_ELBOW_MODEL_BIASES).clamp(Vec3::ZERO, Vec3::INFINITY).dot(Vec3::ONE);
 			let elbow_roll = (HEURISTIC_ELBOW_MODEL_OFFSET + model_out).clamp(HEURISTIC_ELBOW_MODEL_CONSTRAINT_MIN, HEURISTIC_ELBOW_MODEL_CONSTRAINT_MAX);
-			let mut elbow_vec = Quat::from_axis_angle(final_hand_rel_shoulder, elbow_roll).mul_vec3(Vec3::Y);
+			let mut elbow_vec = Quat::from_axis_angle(final_hand_rel_v_shoulder, elbow_roll).mul_vec3(Vec3::Y);
 			let hand_dist_thresh = HEURISTIC_ELBOW_SINGULARITY_RADIAL_THRESHOLD * height_factor;
-			let hand_horiz_dist = (final_hand_rel_shoulder*Vec3::new(1.,0.,1.)).length();
+			let hand_horiz_dist = (final_hand_rel_v_shoulder*Vec3::new(1.,0.,1.)).length();
 			let hand_dist_scaled = hand_horiz_dist / hand_dist_thresh;
 			if hand_dist_scaled < 1. {
 				elbow_vec = HEURISTIC_ELBOW_SINGULARITY_VECTOR.lerp(elbow_vec, hand_dist_scaled)
 			}
-			if final_hand_rel_shoulder.z > HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN && final_hand_rel_shoulder.z < HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX {
+			if final_hand_rel_v_shoulder.z > HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN && final_hand_rel_v_shoulder.z < HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX {
 				let a = HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN;
 				let b = (HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX - a)/2.;
-				let lerp_amount = (final_hand_rel_shoulder.z - a + b)/b; // should be 0 at the center, and 1 at the edges
+				let lerp_amount = (final_hand_rel_v_shoulder.z - a + b)/b; // should be 0 at the center, and 1 at the edges
 				elbow_vec = HEURISTIC_ELBOW_SINGULARITY_VECTOR.lerp(elbow_vec, lerp_amount);
 			}
-			let hand_angle_in_arm = virtual_shoulder.looking_to(final_hand_rel_shoulder, elbow_vec).rotation.inverse()*final_hands[i].rotation;
+			let hand_angle_in_arm = virtual_shoulder.looking_to(final_hand_rel_v_shoulder, elbow_vec).rotation.inverse()*final_hands[i].rotation;
 			let hand_angle_euler = hand_angle_in_arm.to_euler(EulerRot::YXZ);
 			let hand_yaw = hand_angle_euler.0;
 			let hand_roll = hand_angle_euler.2;
@@ -615,37 +741,89 @@ fn update_ik(
 			if hand_roll_thresh_under < 0. {
 				hand_roll_correction += hand_roll_thresh_under.powi(2)*HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_LOWER;
 			}
-			elbow_vec = Quat::from_axis_angle(final_hand_rel_shoulder, hand_roll_correction).mul_vec3(elbow_vec);
-			// accounting for scaling is fucking annoying
-			let upper_arm_length = (root_skel_sides[i].arm.lower.translation - root_skel_sides[i].arm.upper.translation).length_squared();
-			let forearm_length = (root_skel_sides[i].hand.translation - root_skel_sides[i].arm.lower.translation).length_squared();
-			let shoulder_hand_length = final_hand_rel_shoulder.length_squared();
-			// bleigh, this is more annoying than expected
+
+			let final_hand_rel_shoulder = final_hands[i].translation - root_skel_sides[i].arm.upper.translation;
+			elbow_vec = Quat::from_axis_angle(final_hand_rel_v_shoulder.normalize(), hand_roll_correction).mul_vec3(elbow_vec);
+			// convert the elbow vec from the virtual shoulder coordinate system to the root coordinate system
+			// the elbow vec represents an orientation, so this purely involves rotation
+			elbow_vec = virtual_shoulder.rotation.inverse().mul_vec3(elbow_vec);
 			let hand_upper_arm_angle = cos_law(upper_arm_length, shoulder_hand_length, forearm_length);
-			let hand_upper_arm_rot = Quat::from_axis_angle(elbow_vec.cross(final_hand_rel_shoulder), hand_upper_arm_angle);
-			// ok, this is what I need, but now it's in the virtual shoulder's coordinate system, which... hmm
-			let new_elbow_pos = hand_upper_arm_rot.mul_vec3(final_hand_rel_shoulder).normalize()*upper_arm_length;
-			// this feels like a really stupid way of implementing this, but it's also what I can think of immediately so :shrug:
-			let curr_elbow_rel_v_shoulder = GlobalTransform::from(root_skel_sides[i].arm.lower).reparented_to(&GlobalTransform::from(virtual_shoulder)).translation;
-			let elbow_corrective_rot = Quat::from_rotation_arc(curr_elbow_rel_v_shoulder, new_elbow_pos);
-			skeleton_sides[i].arm.upper.rotate(elbow_corrective_rot);
-			let updated_root_upper_arm = root_skel_sides[i].arm.upper.with_rotation(root_skel_sides[i].arm.upper.rotation * elbow_corrective_rot);
-			let curr_root_lower_arm = skeleton_sides[i].arm.lower.mul_transform(updated_root_upper_arm);
-			let target_hand_rel_elbow = GlobalTransform::from(final_hands[i]).reparented_to(&GlobalTransform::from(curr_root_lower_arm));
-			let hand_corrective_rot = Quat::from_rotation_arc(skeleton_sides[i].hand.translation, target_hand_rel_elbow.translation);
-			skeleton_sides[i].arm.lower.rotate(hand_corrective_rot);
-			let updated_root_lower_arm = curr_root_lower_arm.with_rotation(root_skel_sides[i].arm.lower.rotation * hand_corrective_rot);
-			let curr_root_hand = skeleton_sides[i].hand.mul_transform(updated_root_lower_arm);
-			skeleton_sides[i].hand.rotate(curr_root_hand.rotation.conjugate() * final_hands[i].rotation)
+			if hand_upper_arm_angle.is_nan() {
+				panic!("arm cos law failed. (a, b, c) = {:?}", (upper_arm_length, shoulder_hand_length, forearm_length))
+			}
+			let hand_upper_arm_rot = Quat::from_axis_angle(final_hand_rel_shoulder.cross(elbow_vec).normalize(), hand_upper_arm_angle);
+			let new_elbow_pos = hand_upper_arm_rot.mul_vec3(final_hand_rel_shoulder).normalize();
+			// new new algorithm; do the roll seperately, by mapping (-1, 1, 0)
+			// calculation of the base rotation could theoretically be calculated at setup time
+			let uarm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].arm.lower.translation.normalize(), Vec3::Z);
+			// the following results in a correct orientation but makes no garuntees about roll
+			let uarm_rot_final = Quat::from_rotation_arc(Vec3::Z, new_elbow_pos);
+			let elbow_in_pointing = uarm_rot_base.mul_vec3(elbow_vec) * Vec3::new(1., 1., 0.);
+			let uarm_roll = Quat::from_rotation_arc(Vec3::new(-1., 1., 0.).cross(Vec3::Z).normalize(), elbow_in_pointing.normalize());
+			let new_upper_arm_rot = (uarm_rot_final * uarm_roll * uarm_rot_base).normalize();
+
+			if new_upper_arm_rot.x.is_nan() {
+				panic!("upper arm rotation calculation failed")
+			}
+			skeleton_sides[i].arm.upper.rotation = (arm_highest_root.rotation.inverse() * new_upper_arm_rot).normalize();
+			// next line is certified correct
+			let updated_root_upper_arm = arm_highest_root.mul_transform(skeleton_sides[i].arm.upper);
+			let larm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].hand.translation.normalize(), Vec3::Z).normalize();
+			let curr_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower).translation;
+			let mut dislocation = curr_root_lower_arm - (new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation);
+			if dislocation.length() > 0.01 {
+				panic!("Ur arm math broke lol, dislocation  = {:?}", dislocation)
+			}
+			//println!("Checking things: {:?}", (curr_root_lower_arm.translation, updated_root_upper_arm.translation, new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation));
+			let target_hand_rel_elbow = final_hands[i].translation - curr_root_lower_arm;
+			let larm_rot_final = Quat::from_rotation_arc(Vec3::Z, target_hand_rel_elbow.normalize());
+			let new_lower_arm_rot = (larm_rot_final * uarm_roll * larm_rot_base).normalize();
+			if new_lower_arm_rot.x.is_nan() {
+				panic!("lower arm rotation calculation failed")
+			}
+			skeleton_sides[i].arm.lower.rotation = (updated_root_upper_arm.rotation.inverse() * new_lower_arm_rot).normalize();
+			let updated_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower);
+			let curr_root_hand = updated_root_lower_arm.mul_transform(skeleton_sides[i].hand.with_rotation(default_skel_sides[i].hand.rotation));
+			dislocation = curr_root_hand.translation - (target_hand_rel_elbow.normalize()*forearm_length + updated_root_lower_arm.translation);
+			if dislocation.length() > 0.05 {
+				panic!("Ur hand math (3) broke lol, dislocation  = {:?}", dislocation)
+			}
+			dislocation = final_hands[i].translation - (target_hand_rel_elbow + updated_root_lower_arm.translation);
+			if dislocation.length() > 0.05 {
+				panic!("Ur hand math (2) broke lol, dislocation  = {:?}", dislocation)
+			}
+			skeleton_sides[i].hand.rotation = (curr_root_hand.rotation.inverse() * final_hands[i].rotation).normalize();
 			// WOOOO!!!! OH YEAH BABY THAT'S EVERYTHING!!!!
 		}
-		drop(skeleton_sides);
+		drop(skeleton_sides); 
 		// write the changes to skeleton back to the transforms
 		let skeleton_array = skeleton.arrayify();
-		for (ent, skel) in skeleton_comp.entities.iter().zip(skeleton_array.iter()) {
-			let entity = match ent {Some(e) => e, None => continue};
-			let bone = skel.ok_or(eyre::Report::msg("wtf how, Skeleton modified in ways it shouldn't be"))?;
-			*transforms.get_mut(*entity)?.0 = bone;
+		for i in 0..SKELETON_ARR_LEN {
+			let entity = match skeleton_comp.entities[i] {Some(e) => e, None => continue};
+			let bone = skeleton_array[i].ok_or(eyre!("wtf how, Skeleton modified in ways it shouldn't be"))?;
+			*transforms.get_mut(entity)?.0 = bone;
+			if test {
+				match skeleton_array[i] {
+					Some(t) => {
+						if contains_nan(t.translation) {
+							println!("Outgoing transform {:?} contained a NaN in translation", i);
+							found_nan = true;
+						}
+						if quat_contains_nan(t.rotation) {
+							println!("Outgoing transform {:?} contained a NaN in rotation", i);
+							found_nan = true;
+						}
+						if contains_nan(t.scale) {
+							println!("Outgoing transform {:?} contained a NaN in scale", i);
+							found_nan = true;
+						}
+					},
+					None => {}
+				}
+			}
+		}
+		if found_nan {
+			panic!("Found a NaN, details precede. Exiting.")
 		}
 		Ok(())
 	};
@@ -677,15 +855,15 @@ fn setup_ik(
 		("J_Bip_L_UpperLeg", LEFT_LEG_UPPER),
 		("J_Bip_L_LowerLeg", LEFT_LEG_LOWER),
 		("J_Bip_L_UpperArm", LEFT_ARM_UPPER),
-		("J_Bip_L_Lowerarm", LEFT_ARM_LOWER),
+		("J_Bip_L_LowerArm", LEFT_ARM_LOWER),
 		("J_Bip_R_Shoulder", RIGHT_SHOULDER),
 		("J_Adj_R_FaceEye", RIGHT_EYE),
 		("J_Bip_R_Hand", RIGHT_HAND),
 		("J_Bip_R_Foot", RIGHT_FOOT),
 		("J_Bip_R_UpperLeg", RIGHT_LEG_UPPER),
 		("J_Bip_R_LowerLeg", RIGHT_LEG_LOWER),
-		("J_Bip_R_Upperarm", RIGHT_ARM_UPPER),
-		("J_Bip_R_Lowerarm", RIGHT_LEG_LOWER)
+		("J_Bip_R_UpperArm", RIGHT_ARM_UPPER),
+		("J_Bip_R_LowerArm", RIGHT_ARM_LOWER)
 	]);
 	for (entity, _thing) in added_query.iter() {
 		let mut entities: [Option<Entity>; SKELETON_ARR_LEN] = [None; SKELETON_ARR_LEN];
@@ -724,16 +902,22 @@ fn setup_ik(
 		let skel = match Skeleton::new(skeleton_transform_array)
 		{
 			Ok(skel) => skel,
-			Err(_) => return,
+			Err(err) => {
+				println!("Transformation to skeleton failed, {:?}", err);
+				return
+			},
 		};
+		// this next thing should really never fail, that would be very odd. I guess if root_t failed to load? Maybe? Surely that should just, error out though, right?
 		let root_skel = match Skeleton::new(skeleton_root_array)
 		{
 			Ok(skel) => skel,
 			Err(_) => return,
 		};
-		let skeleton = SkeletonComponent {entities: entities, height: root_skel.head.translation.y*HEAD_HEIGHT_FACTOR, defaults: skel};
+		println!("Hand forward is {:?}, up is {:?}", root_skel.left.hand.forward(), root_skel.left.hand.up());
+		let skeleton = SkeletonComponent {entities: entities, height: root_skel.head.translation.y*HEAD_HEIGHT_FACTOR, defaults: skel, root_defaults: root_skel};
 		if skeleton.height <= 0. {return};
 		commands.entity(entity).remove::<AvatarSetup>();
 		commands.entity(root).insert(skeleton);
+		println!("Succesfully added skeleton component to root")
 	}
 }

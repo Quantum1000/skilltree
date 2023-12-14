@@ -1,0 +1,230 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'cube'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=cube",
+                    "--package=cube"
+                ],
+                "filter": {
+                    "name": "cube",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'cube'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=cube",
+                    "--package=cube"
+                ],
+                "filter": {
+                    "name": "cube",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'worldspace-ui'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=worldspace-ui",
+                    "--package=worldspace-ui"
+                ],
+                "filter": {
+                    "name": "worldspace-ui",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'worldspace-ui'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=worldspace-ui",
+                    "--package=worldspace-ui"
+                ],
+                "filter": {
+                    "name": "worldspace-ui",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'ik'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=ik",
+                    "--package=ik"
+                ],
+                "filter": {
+                    "name": "ik",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'ik'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=ik",
+                    "--package=ik"
+                ],
+                "filter": {
+                    "name": "ik",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'manipulation-flatscreen'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=manipulation-flatscreen",
+                    "--package=manipulation-flatscreen"
+                ],
+                "filter": {
+                    "name": "manipulation-flatscreen",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'manipulation-flatscreen'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=manipulation-flatscreen",
+                    "--package=manipulation-flatscreen"
+                ],
+                "filter": {
+                    "name": "manipulation-flatscreen",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'openxr-6dof'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=openxr-6dof",
+                    "--package=openxr-6dof"
+                ],
+                "filter": {
+                    "name": "openxr-6dof",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'openxr-6dof'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=openxr-6dof",
+                    "--package=openxr-6dof"
+                ],
+                "filter": {
+                    "name": "openxr-6dof",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'xr-ik-mirror'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=xr-ik-mirror",
+                    "--package=xr-ik-mirror"
+                ],
+                "filter": {
+                    "name": "xr-ik-mirror",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'xr-ik-mirror'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=xr-ik-mirror",
+                    "--package=xr-ik-mirror"
+                ],
+                "filter": {
+                    "name": "xr-ik-mirror",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

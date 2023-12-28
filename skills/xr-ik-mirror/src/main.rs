@@ -54,6 +54,8 @@ const HEURISTIC_ELBOW_WRIST_ROLL_THRESHOLD_UPPER: f32 = 0.5 * PI; // from [1]
 const HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_LOWER: f32 = 1./(-(1./0.3) * PI); // 600^-1 degrees, from [1]
 const HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_UPPER: f32 = 1./(1./0.6 * PI); // 300^-1 degrees, from [1]
 const INCON_SKEL_ERR: &str = "wtf how, Skeleton modified in ways it shouldn't be";
+const USE_ELBOW_HEURISTIC: bool = false;
+const ELBOW_POLE_TARGET: Vec3 = Vec3::new(0.7, -0.5, -0.3);
 
 
 fn main() {
@@ -709,50 +711,57 @@ fn update_ik(
 				final_hand_rel_v_shoulder = final_hand_rel_v_shoulder.normalize()*minimum_combined_arm_length;
 			}
 			// these next two lines should account for scale, probably?
-			// the coordinate system is unspecified in the paper afaik, I can only pray this works ig
-			let mirror_vec = Vec3::new(0., 1., 1.,) + Vec3::X * x_side;
-			let model_out = (final_hand_rel_v_shoulder * mirror_vec / skeleton_comp.height).normalize().mul_add(HEURISTIC_ELBOW_MODEL_WEIGHTS, HEURISTIC_ELBOW_MODEL_BIASES)
-			.clamp(Vec3::ZERO, Vec3::INFINITY).dot(Vec3::ONE);
-			let elbow_roll = (HEURISTIC_ELBOW_MODEL_OFFSET + model_out).clamp(HEURISTIC_ELBOW_MODEL_CONSTRAINT_MIN, HEURISTIC_ELBOW_MODEL_CONSTRAINT_MAX);
-			let mut elbow_vec = Quat::from_axis_angle(final_hand_rel_v_shoulder, elbow_roll).mul_vec3(Vec3::Y);
-			let hand_dist_thresh = HEURISTIC_ELBOW_SINGULARITY_RADIAL_THRESHOLD * height_factor;
-			let hand_horiz_dist = (final_hand_rel_v_shoulder*Vec3::new(1.,0.,1.)).length();
-			let hand_dist_scaled = hand_horiz_dist / hand_dist_thresh;
-			if hand_dist_scaled < 1. {
-				elbow_vec = HEURISTIC_ELBOW_SINGULARITY_VECTOR.lerp(elbow_vec, hand_dist_scaled)
-			}
-			if final_hand_rel_v_shoulder.z > HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN && final_hand_rel_v_shoulder.z < HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX {
-				let a = HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN;
-				let b = (HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX - a)/2.;
-				let lerp_amount = (final_hand_rel_v_shoulder.z - a + b)/b; // should be 0 at the center, and 1 at the edges
-				elbow_vec = HEURISTIC_ELBOW_SINGULARITY_VECTOR.lerp(elbow_vec, lerp_amount);
-			}
-			let hand_angle_in_arm = virtual_shoulder.looking_to(final_hand_rel_v_shoulder, elbow_vec).rotation.inverse()*final_hands[i].rotation;
-			let hand_angle_euler = hand_angle_in_arm.to_euler(EulerRot::YXZ);
-			let hand_yaw = hand_angle_euler.0;
-			let hand_roll = hand_angle_euler.2;
-			let hand_yaw_thresh_over = hand_yaw - HEURISTIC_ELBOW_WRIST_YAW_THRESHOLD_UPPER;
-			let hand_yaw_thresh_under = hand_yaw - HEURISTIC_ELBOW_WRIST_YAW_THRESHOLD_LOWER;
-			let hand_roll_thresh_over = hand_roll - HEURISTIC_ELBOW_WRIST_ROLL_THRESHOLD_UPPER;
-			let hand_roll_thresh_under = hand_roll - HEURISTIC_ELBOW_WRIST_ROLL_THRESHOLD_LOWER;
-			let mut hand_roll_correction: f32 = 0.;
-			if hand_yaw_thresh_over > 0. {
-				hand_roll_correction += hand_yaw_thresh_over.powi(2)*HEURISTIC_ELBOW_WRIST_YAW_SCALING_CONSTANT_UPPER;
-			}
-			if hand_yaw_thresh_under < 0. {
-				hand_roll_correction += hand_yaw_thresh_under.powi(2)*HEURISTIC_ELBOW_WRIST_YAW_SCALING_CONSTANT_LOWER;
-			}
-			if hand_roll_thresh_over > 0. {
-				hand_roll_correction += hand_roll_thresh_over.powi(2)*HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_UPPER;
-			}
-			if hand_roll_thresh_under < 0. {
-				hand_roll_correction += hand_roll_thresh_under.powi(2)*HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_LOWER;
-			}
-
+			let mirror_vec = Vec3::new(0., 1., 1.,) + Vec3::X * x_side * -1.;
+			let mut elbow_vec: Vec3;
 			let final_hand_rel_shoulder = final_hands[i].translation - root_skel_sides[i].arm.upper.translation;
-			elbow_vec = Quat::from_axis_angle(final_hand_rel_v_shoulder.normalize(), hand_roll_correction).mul_vec3(elbow_vec);
-			// convert the elbow vec from the virtual shoulder coordinate system to the root coordinate system
-			// the elbow vec represents an orientation, so this purely involves rotation
+			if USE_ELBOW_HEURISTIC {
+				// the coordinate system is unspecified in the paper afaik, I can only pray this works ig
+				let model_out = (final_hand_rel_v_shoulder * mirror_vec / skeleton_comp.height).normalize().mul_add(HEURISTIC_ELBOW_MODEL_WEIGHTS, HEURISTIC_ELBOW_MODEL_BIASES)
+				.clamp(Vec3::ZERO, Vec3::INFINITY).dot(Vec3::ONE);
+				let elbow_roll = (HEURISTIC_ELBOW_MODEL_OFFSET + model_out).clamp(HEURISTIC_ELBOW_MODEL_CONSTRAINT_MIN, HEURISTIC_ELBOW_MODEL_CONSTRAINT_MAX);
+				elbow_vec = Quat::from_axis_angle(final_hand_rel_v_shoulder, elbow_roll).mul_vec3(Vec3::Y);
+				let hand_dist_thresh = HEURISTIC_ELBOW_SINGULARITY_RADIAL_THRESHOLD * height_factor;
+				let hand_horiz_dist = (final_hand_rel_v_shoulder*Vec3::new(1.,0.,1.)).length();
+				let hand_dist_scaled = hand_horiz_dist / hand_dist_thresh;
+				if hand_dist_scaled < 1. {
+					elbow_vec = HEURISTIC_ELBOW_SINGULARITY_VECTOR.lerp(elbow_vec, hand_dist_scaled)
+				}
+				if final_hand_rel_v_shoulder.z > HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN && final_hand_rel_v_shoulder.z < HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX {
+					let a = HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MIN;
+					let b = (HEURISTIC_ELBOW_SINGULARITY_FORWARD_THRESHOLD_MAX - a)/2.;
+					let lerp_amount = (final_hand_rel_v_shoulder.z - a + b)/b; // should be 0 at the center, and 1 at the edges
+					elbow_vec = HEURISTIC_ELBOW_SINGULARITY_VECTOR.lerp(elbow_vec, lerp_amount);
+				}
+				let hand_angle_in_arm = virtual_shoulder.looking_to(final_hand_rel_v_shoulder, elbow_vec).rotation.inverse()*final_hands[i].rotation;
+				let hand_angle_euler = hand_angle_in_arm.to_euler(EulerRot::YXZ);
+				let hand_yaw = hand_angle_euler.0;
+				let hand_roll = hand_angle_euler.2;
+				let hand_yaw_thresh_over = hand_yaw - HEURISTIC_ELBOW_WRIST_YAW_THRESHOLD_UPPER;
+				let hand_yaw_thresh_under = hand_yaw - HEURISTIC_ELBOW_WRIST_YAW_THRESHOLD_LOWER;
+				let hand_roll_thresh_over = hand_roll - HEURISTIC_ELBOW_WRIST_ROLL_THRESHOLD_UPPER;
+				let hand_roll_thresh_under = hand_roll - HEURISTIC_ELBOW_WRIST_ROLL_THRESHOLD_LOWER;
+				let mut hand_roll_correction: f32 = 0.;
+				if hand_yaw_thresh_over > 0. {
+					hand_roll_correction += hand_yaw_thresh_over.powi(2)*HEURISTIC_ELBOW_WRIST_YAW_SCALING_CONSTANT_UPPER;
+				}
+				if hand_yaw_thresh_under < 0. {
+					hand_roll_correction += hand_yaw_thresh_under.powi(2)*HEURISTIC_ELBOW_WRIST_YAW_SCALING_CONSTANT_LOWER;
+				}
+				if hand_roll_thresh_over > 0. {
+					hand_roll_correction += hand_roll_thresh_over.powi(2)*HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_UPPER;
+				}
+				if hand_roll_thresh_under < 0. {
+					hand_roll_correction += hand_roll_thresh_under.powi(2)*HEURISTIC_ELBOW_WRIST_ROLL_SCALING_CONSTANT_LOWER;
+				}
+
+				elbow_vec = Quat::from_axis_angle(final_hand_rel_v_shoulder.normalize(), hand_roll_correction).mul_vec3(elbow_vec);
+				// convert the elbow vec from the virtual shoulder coordinate system to the root coordinate system
+				// the elbow vec represents an orientation, so this purely involves rotation
+			}
+			else
+			{
+				elbow_vec = ELBOW_POLE_TARGET * mirror_vec * skeleton_comp.height - virtual_shoulder.translation;
+			}
 			elbow_vec = virtual_shoulder.rotation.inverse().mul_vec3(elbow_vec);
 			let hand_upper_arm_angle = cos_law(upper_arm_length, shoulder_hand_length, forearm_length);
 			if hand_upper_arm_angle.is_nan() {
@@ -763,11 +772,9 @@ fn update_ik(
 			// new new algorithm; do the roll seperately, by mapping (-1, 1, 0)
 			// calculation of the base rotation could theoretically be calculated at setup time
 			let uarm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].arm.lower.translation.normalize(), Vec3::Z);
-			// the following results in a correct orientation but makes no garuntees about roll
 			let uarm_rot_final = Quat::from_rotation_arc(Vec3::Z, new_elbow_pos);
-			let elbow_in_pointing = uarm_rot_base.mul_vec3(elbow_vec) * Vec3::new(1., 1., 0.);
-			let uarm_roll = Quat::from_rotation_arc(Vec3::new(-1., 1., 0.).cross(Vec3::Z).normalize(), elbow_in_pointing.normalize());
-			let new_upper_arm_rot = (uarm_rot_final * uarm_roll * uarm_rot_base).normalize();
+			// theoretically splitting this should assist the introduction of roll correction, but currently serves no purpose
+			let new_upper_arm_rot = (uarm_rot_final * uarm_rot_base).normalize();
 
 			if new_upper_arm_rot.x.is_nan() {
 				panic!("upper arm rotation calculation failed")
@@ -777,17 +784,17 @@ fn update_ik(
 			let updated_root_upper_arm = arm_highest_root.mul_transform(skeleton_sides[i].arm.upper);
 			let larm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].hand.translation.normalize(), Vec3::Z).normalize();
 			let curr_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower).translation;
-			let mut dislocation = curr_root_lower_arm - (new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation);
+			//let mut dislocation = curr_root_lower_arm - (new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation);
 			//if dislocation.length() > 0.01 {panic!("Ur arm math broke lol, dislocation  = {:?}", dislocation)}
 			//println!("Checking things: {:?}", (curr_root_lower_arm.translation, updated_root_upper_arm.translation, new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation));
 			let target_hand_rel_elbow = final_hands[i].translation - curr_root_lower_arm;
 			let larm_rot_final = Quat::from_rotation_arc(Vec3::Z, target_hand_rel_elbow.normalize());
-			let new_lower_arm_rot = (larm_rot_final * uarm_roll * larm_rot_base).normalize();
+			let new_lower_arm_rot = (larm_rot_final * larm_rot_base).normalize();
 			//if new_lower_arm_rot.x.is_nan() {panic!("lower arm rotation calculation failed")}
 			skeleton_sides[i].arm.lower.rotation = (updated_root_upper_arm.rotation.inverse() * new_lower_arm_rot).normalize();
 			let updated_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower);
 			let curr_root_hand = updated_root_lower_arm.mul_transform(skeleton_sides[i].hand.with_rotation(default_skel_sides[i].hand.rotation));
-			dislocation = curr_root_hand.translation - (target_hand_rel_elbow.normalize()*forearm_length + updated_root_lower_arm.translation);
+			//dislocation = curr_root_hand.translation - (target_hand_rel_elbow.normalize()*forearm_length + updated_root_lower_arm.translation);
 			/*if dislocation.length() > 0.05 {
 				panic!("Ur hand math (3) broke lol, dislocation  = {:?}", dislocation)
 			}

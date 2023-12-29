@@ -3,6 +3,7 @@ use bevy::core_pipeline::clear_color::ClearColorConfig;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::EulerRot::XYZ;
 use bevy::prelude::*;
+use bevy::time::TimePlugin;
 use bevy::utils::Duration;
 use bevy::render::camera::RenderTarget;
 use bevy::render::render_resource::{
@@ -203,7 +204,7 @@ fn setup(
 	});
 	// camera
 	commands.spawn((Camera3dBundle {
-		transform: Transform::from_xyz(-2.0, 2.5, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+		transform: Transform::from_xyz(-1.0, 1.5, 3.0).looking_at(Vec3::Y * 0.8, Vec3::Y),
 		..default()
 	},));
 	commands.spawn((
@@ -417,13 +418,38 @@ impl Limb {
 }
 
 
+fn orthonormalize(plus_x: Vec3, plus_z: Vec3) -> Vec3 {
+    let normalized_plus_z = plus_z.normalize(); // Step 1
+    let projection = plus_x.dot(normalized_plus_z) * normalized_plus_z; // Step 2
+    let orthonormal_vector = plus_x - projection; // Step 3
+
+    orthonormal_vector.normalize() // Step 4 (optional)
+}
+
+fn quat_from_vectors(plus_x: Vec3, plus_z: Vec3) -> Quat{
+
+	let plus_y: Vec3 = plus_z.cross(plus_x);
+
+	let mat: Mat3 = Mat3::from_cols(plus_x, plus_y, plus_z);
+
+	// CARGO CULT ALERT: You probably shouldn't need to normalize here!
+	Quat::from_mat3(&mat).normalize()
+}
+
+fn line_from_transform(transform: Transform, color: Color, mut gizmo: Gizmos){
+	let pos2 = transform.translation + transform.forward()*transform.scale.z;
+	gizmo.line(transform.translation, pos2, color);
+}
+
 
 fn update_ik(
 	skeleton_query: Query<(&GlobalTransform, &SkeletonComponent)>,
 	mut transforms: Query<(&mut Transform, &GlobalTransform, With<Bone>)>,
+	time: Res<Time<Virtual>>,
 	oculus_controller: Res<OculusController>,
 	frame_state: Res<XrFrameState>,
 	xr_input: Res<XrInput>,
+	mut gizmo: Gizmos,
 ) {
 	let mut func = || -> color_eyre::Result<()> {
 		// system should loop harmlessly until a SkeletonComponent is added
@@ -767,14 +793,16 @@ fn update_ik(
 			if hand_upper_arm_angle.is_nan() {
 				panic!("arm cos law failed. (a, b, c) = {:?}", (upper_arm_length, shoulder_hand_length, forearm_length))
 			}
-			let hand_upper_arm_rot = Quat::from_axis_angle(final_hand_rel_shoulder.cross(elbow_vec).normalize(), hand_upper_arm_angle);
+			let elbow_axis = final_hand_rel_shoulder.cross(elbow_vec).normalize();
+			let hand_upper_arm_rot = Quat::from_axis_angle(elbow_axis, hand_upper_arm_angle);
 			let new_elbow_pos = hand_upper_arm_rot.mul_vec3(final_hand_rel_shoulder).normalize();
 			// new new algorithm; do the roll seperately, by mapping (-1, 1, 0)
 			// calculation of the base rotation could theoretically be calculated at setup time
 			let uarm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].arm.lower.translation.normalize(), Vec3::Z);
+			// I am very concerned about why this doesn't work as a rotation arc
+			let uarm_roll = Quat::from_rotation_arc_2d(uarm_rot_base.inverse().mul_vec3(elbow_axis).truncate(), Vec2::new(-1.,1.));
 			let uarm_rot_final = Quat::from_rotation_arc(Vec3::Z, new_elbow_pos);
-			// theoretically splitting this should assist the introduction of roll correction, but currently serves no purpose
-			let new_upper_arm_rot = (uarm_rot_final * uarm_rot_base).normalize();
+			let new_upper_arm_rot = (uarm_rot_final * uarm_roll * uarm_rot_base).normalize();
 
 			if new_upper_arm_rot.x.is_nan() {
 				panic!("upper arm rotation calculation failed")
@@ -782,14 +810,38 @@ fn update_ik(
 			skeleton_sides[i].arm.upper.rotation = (arm_highest_root.rotation.inverse() * new_upper_arm_rot).normalize();
 			// next line is certified correct
 			let updated_root_upper_arm = arm_highest_root.mul_transform(skeleton_sides[i].arm.upper);
-			let larm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].hand.translation.normalize(), Vec3::Z).normalize();
 			let curr_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower).translation;
 			//let mut dislocation = curr_root_lower_arm - (new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation);
 			//if dislocation.length() > 0.01 {panic!("Ur arm math broke lol, dislocation  = {:?}", dislocation)}
 			//println!("Checking things: {:?}", (curr_root_lower_arm.translation, updated_root_upper_arm.translation, new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation));
 			let target_hand_rel_elbow = final_hands[i].translation - curr_root_lower_arm;
+			let larm_pre_rot = Quat::from_rotation_arc(skeleton_sides[i].hand.translation.normalize(), target_hand_rel_elbow.normalize());
+			let larm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].hand.translation.normalize(), Vec3::Z);
+			let larm_rot_twist = Quat::from_rotation_arc_2d(larm_pre_rot.inverse().mul_vec3(final_hands[i].up()).truncate(), Vec2::Y);
 			let larm_rot_final = Quat::from_rotation_arc(Vec3::Z, target_hand_rel_elbow.normalize());
-			let new_lower_arm_rot = (larm_rot_final * larm_rot_base).normalize();
+			let new_lower_arm_rot = (larm_rot_final * larm_rot_twist * larm_rot_base).normalize();
+
+			// let hand_plus_z: Vec3 = final_hands[i].rotation * Vec3::Z;
+			// let hand_plus_x: Vec3 = (final_hands[i].rotation * Vec3::X).normalize();
+			// x_sidez
+			let hand_plus_x: Vec3 = (final_hands[i].rotation * Vec3::Z * x_side).normalize();
+			let forearm_plus_z: Vec3 = (final_hands[i].translation - curr_root_lower_arm).normalize();
+
+			let forearm_plus_x: Vec3 = orthonormalize(hand_plus_x, forearm_plus_z);
+
+
+			let forearm_rotation_global: Quat = quat_from_vectors(forearm_plus_x, forearm_plus_z);
+
+			let gizmo_root: Vec3 = final_hands[i].translation;
+			let gizmo_plus_x = gizmo_root + (forearm_plus_x*0.1);
+			let gizmo_plus_z = gizmo_root + (forearm_plus_z*0.1);
+			let gizmo_plus_y: Vec3 = gizmo_root + ((forearm_rotation_global * Vec3::Y) * 0.1);
+
+			gizmo.line(gizmo_root, gizmo_plus_x, Color::RED);
+			gizmo.line(gizmo_root, gizmo_plus_z, Color::BLUE);
+			gizmo.line(gizmo_root, gizmo_plus_y, Color::GREEN);
+
+
 			//if new_lower_arm_rot.x.is_nan() {panic!("lower arm rotation calculation failed")}
 			skeleton_sides[i].arm.lower.rotation = (updated_root_upper_arm.rotation.inverse() * new_lower_arm_rot).normalize();
 			let updated_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower);

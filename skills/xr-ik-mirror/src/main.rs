@@ -3,6 +3,7 @@ use bevy::core_pipeline::clear_color::ClearColorConfig;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::EulerRot::XYZ;
 use bevy::prelude::*;
+//use bevy::time::TimePlugin;
 use bevy::utils::Duration;
 use bevy::render::camera::RenderTarget;
 use bevy::render::render_resource::{
@@ -203,7 +204,7 @@ fn setup(
 	});
 	// camera
 	commands.spawn((Camera3dBundle {
-		transform: Transform::from_xyz(-2.0, 2.5, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+		transform: Transform::from_xyz(-1.0, 1.5, 3.0).looking_at(Vec3::Y * 0.8, Vec3::Y),
 		..default()
 	},));
 	commands.spawn((
@@ -272,7 +273,7 @@ struct Skeleton{
 #[derive(Copy, Clone)]
 struct SkeletonSide {
 	shoulder: Option<Transform>,
-	eye: Option<Transform>,
+	eye: Transform,
 	leg: Limb,
 	arm: Limb,
 	foot: Transform,
@@ -296,7 +297,7 @@ impl Skeleton {
 			neck: skeleton[NECK],
 			left: SkeletonSide {
 				shoulder: skeleton[LEFT_SHOULDER],
-				eye: skeleton[LEFT_EYE],
+				eye: skeleton[LEFT_EYE].ok_or(eyre!("bad Skeleton, missing left eye"))?,
 				foot: skeleton[LEFT_FOOT].ok_or(eyre!("bad Skeleton, missing left foot"))?,
 				hand: skeleton[LEFT_HAND].ok_or(eyre!("bad Skeleton, missing left hand"))?,
 				leg: Limb {
@@ -310,7 +311,7 @@ impl Skeleton {
 			},
 			right: SkeletonSide {
 				shoulder: skeleton[RIGHT_SHOULDER],
-				eye: skeleton[RIGHT_EYE],
+				eye: skeleton[RIGHT_EYE].ok_or(eyre!("bad Skeleton, missing right eye"))?,
 				foot: skeleton[RIGHT_FOOT].ok_or(eyre!("bad Skeleton, missing right foot"))?,
 				hand: skeleton[RIGHT_HAND].ok_or(eyre!("bad Skeleton, missing right hand"))?,
 				leg: Limb {
@@ -334,7 +335,7 @@ impl Skeleton {
 		skeleton[UPPER_CHEST] = self.upper_chest;
 		skeleton[NECK] = self.neck;
 		skeleton[LEFT_SHOULDER] = self.left.shoulder;
-		skeleton[LEFT_EYE] = self.left.eye;
+		skeleton[LEFT_EYE] = Some(self.left.eye);
 		skeleton[LEFT_FOOT] = Some(self.left.foot);
 		skeleton[LEFT_HAND] = Some(self.left.hand);
 		skeleton[LEFT_ARM_UPPER] = Some(self.left.arm.upper);
@@ -342,7 +343,7 @@ impl Skeleton {
 		skeleton[LEFT_LEG_UPPER] = Some(self.left.leg.upper);
 		skeleton[LEFT_LEG_LOWER] = Some(self.left.leg.lower);
 		skeleton[RIGHT_SHOULDER] = self.right.shoulder;
-		skeleton[RIGHT_EYE] = self.right.eye;
+		skeleton[RIGHT_EYE] = Some(self.right.eye);
 		skeleton[RIGHT_FOOT] = Some(self.right.foot);
 		skeleton[RIGHT_HAND] = Some(self.right.hand);
 		skeleton[RIGHT_ARM_UPPER] = Some(self.right.arm.upper);
@@ -388,10 +389,7 @@ impl Skeleton {
 
 impl SkeletonSide {
 	pub fn recalculate_root(mut self, head: Transform, hips: Transform, mut highest_root: Transform) -> Self {
-		match self.eye {
-			Some(t) => self.eye = Some(head.mul_transform(t)),
-			None => {}
-		}
+		self.eye = head.mul_transform(self.eye);
 		match self.shoulder {
 			Some(t) => {
 				let result = highest_root.mul_transform(t);
@@ -417,13 +415,43 @@ impl Limb {
 }
 
 
+fn orthonormalize(to_project: Vec3, fixed: Vec3) -> Vec3 {
+    let normalized_fixed = fixed.normalize(); // Step 1
+    let projection = to_project.dot(normalized_fixed) * normalized_fixed; // Step 2
+    let orthonormal_vector = to_project - projection; // Step 3
+
+    orthonormal_vector.normalize() // Step 4 (optional)
+}
+
+fn quat_from_vectors(plus_x: Vec3, plus_z: Vec3) -> Quat{
+
+	let plus_y: Vec3 = plus_z.cross(plus_x);
+
+	let mat: Mat3 = Mat3::from_cols(plus_x, plus_y, plus_z);
+
+	// CARGO CULT ALERT: You probably shouldn't need to normalize here!
+	Quat::from_mat3(&mat).normalize()
+}
+
+fn gizmo_from_transform(transform: Transform, gizmo: &mut Gizmos){
+	let gizmo_root = transform.translation;
+	let gizmo_plus_x = gizmo_root + ((transform.rotation * (Vec3::X * transform.scale)) * 0.1);
+	let gizmo_plus_y = gizmo_root + ((transform.rotation * (Vec3::Y * transform.scale)) * 0.1);
+	let gizmo_plus_z = gizmo_root + ((transform.rotation * (Vec3::Z * transform.scale)) * 0.1);
+	gizmo.line(gizmo_root, gizmo_plus_x, Color::RED);
+	gizmo.line(gizmo_root, gizmo_plus_y, Color::GREEN);
+	gizmo.line(gizmo_root, gizmo_plus_z, Color::BLUE);
+}
+
 
 fn update_ik(
 	skeleton_query: Query<(&GlobalTransform, &SkeletonComponent)>,
 	mut transforms: Query<(&mut Transform, &GlobalTransform, With<Bone>)>,
+	//time: Res<Time<Virtual>>,
 	oculus_controller: Res<OculusController>,
 	frame_state: Res<XrFrameState>,
 	xr_input: Res<XrInput>,
+	mut gizmo: Gizmos,
 ) {
 	let mut func = || -> color_eyre::Result<()> {
 		// system should loop harmlessly until a SkeletonComponent is added
@@ -505,11 +533,17 @@ fn update_ik(
 		} else {match headset_input {
 			Ok(input) => {
 				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
-					Transform {
-						translation: input.0.pose.position.to_vec3()*height_factor,
-						rotation: input.0.pose.orientation.to_quat(),
+					let head_rot = input.0.pose.orientation.to_quat();
+					let in_pos = input.0.pose.position.to_vec3()*height_factor;
+					let head_offset = (skeleton.left.eye.translation + skeleton.right.eye.translation)/2.;
+					let head_pos = in_pos - head_rot * head_offset;
+					let transform = Transform {
+						translation: head_pos,
+						rotation: head_rot,
 						scale: skeleton.head.scale,
-					}
+					};
+					gizmo_from_transform(transform.with_translation(in_pos).with_scale(Vec3::ONE*2.*Vec3::NEG_Z), &mut gizmo);
+					transform
 				}
 				else {
 					root_skeleton.head
@@ -524,12 +558,12 @@ fn update_ik(
 				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
 					Transform {
 						translation: input.0.pose.position.to_vec3()*height_factor,
-						rotation: (input.0.pose.orientation.to_quat() * flip_quat_l).normalize(),
+						rotation: input.0.pose.orientation.to_quat(),
 						scale: skeleton.left.hand.scale,
 					}
 				}
 				else {
-					root_skeleton.left.hand
+					root_skeleton.left.hand.with_rotation(flip_quat_l*root_skeleton.left.hand.rotation)
 				}
 			},
 			Err(_) => root_skeleton.left.hand
@@ -541,12 +575,12 @@ fn update_ik(
 				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
 					Transform {
 						translation: input.0.pose.position.to_vec3()*height_factor,
-						rotation: (input.0.pose.orientation.to_quat() * flip_quat_r).normalize(),
+						rotation: input.0.pose.orientation.to_quat(),
 						scale: skeleton.right.hand.scale,
 					}
 				}
 				else {
-					root_skeleton.right.hand
+					root_skeleton.right.hand.with_rotation(flip_quat_r*root_skeleton.right.hand.rotation)
 				}
 			},
 			Err(_) => root_skeleton.right.hand
@@ -574,13 +608,18 @@ fn update_ik(
 		let l_hand_flat = Vec2::new(final_left_hand.translation.x, final_left_hand.translation.z) - head_flat;
 		let r_hand_flat = Vec2::new(final_right_hand.translation.x, final_right_hand.translation.z) - head_flat;
 		let mut hand_dir = l_hand_flat + r_hand_flat;
+		let dir_len = hand_dir.length() / 0.2;
+		if dir_len < 1. {
+			hand_dir = Vec2::Y.rotate(l_hand_flat - r_hand_flat).lerp(hand_dir, dir_len)
+		}
 		let head_rot = final_head.forward();
 		let head_rot_flat = Vec2::new(head_rot.x, head_rot.z);
-		if hand_dir.length_squared() < 0.00001 {
-			hand_dir = head_rot_flat;
-		}
-		else if hand_dir.angle_between(head_rot_flat).abs() > PI/2. {
+		if hand_dir.angle_between(head_rot_flat).abs() > PI/2. {
 			hand_dir *= -1.;
+		}
+		let dir_len = hand_dir.length() / 0.1;
+		if dir_len < 1. {
+			hand_dir = head_rot_flat.lerp(hand_dir, dir_len);
 		}
 		let chest_yaw = (hand_dir * -1.).angle_between(Vec2::Y);
 		let new_hip_rot = Quat::from_euler(EulerRot::YXZ, chest_yaw, -chest_pitch.clamp(0.,PI/2.), 0.);
@@ -590,6 +629,7 @@ fn update_ik(
 		let mut skeleton_sides = [&mut skeleton.left,&mut  skeleton.right];
 		let default_skel_sides = [skeleton_comp.defaults.left, skeleton_comp.defaults.right];
 		let root_default_skel_sides = [skeleton_comp.root_defaults.left, skeleton_comp.root_defaults.right];
+		let flip_quat_sides = [flip_quat_l, flip_quat_r];
 		// return shoulders to neutral position
 		for i in 0..2 {
 			match skeleton_sides[i].shoulder {
@@ -757,23 +797,31 @@ fn update_ik(
 				elbow_vec = Quat::from_axis_angle(final_hand_rel_v_shoulder.normalize(), hand_roll_correction).mul_vec3(elbow_vec);
 				// convert the elbow vec from the virtual shoulder coordinate system to the root coordinate system
 				// the elbow vec represents an orientation, so this purely involves rotation
+				elbow_vec = virtual_shoulder.rotation.inverse().mul_vec3(elbow_vec);
 			}
 			else
 			{
-				elbow_vec = ELBOW_POLE_TARGET * mirror_vec * skeleton_comp.height - virtual_shoulder.translation;
+				elbow_vec = skeleton.hips.rotation * (ELBOW_POLE_TARGET * mirror_vec * skeleton_comp.height) - virtual_shoulder.translation;
 			}
-			elbow_vec = virtual_shoulder.rotation.inverse().mul_vec3(elbow_vec);
 			let hand_upper_arm_angle = cos_law(upper_arm_length, shoulder_hand_length, forearm_length);
 			if hand_upper_arm_angle.is_nan() {
 				panic!("arm cos law failed. (a, b, c) = {:?}", (upper_arm_length, shoulder_hand_length, forearm_length))
 			}
-			let hand_upper_arm_rot = Quat::from_axis_angle(final_hand_rel_shoulder.cross(elbow_vec).normalize(), hand_upper_arm_angle);
-			let new_elbow_pos = hand_upper_arm_rot.mul_vec3(final_hand_rel_shoulder).normalize();
+			gizmo.line(root_skel_sides[i].arm.upper.translation, root_skel_sides[i].arm.upper.translation + final_hand_rel_shoulder, Color::CYAN);
+			let elbow_axis = final_hand_rel_shoulder.normalize().cross(elbow_vec.normalize()).normalize();
+			let gizmo_start = root_skel_sides[i].arm.upper.translation.lerp(root_skel_sides[i].arm.upper.translation + final_hand_rel_shoulder, 0.5);
+			gizmo.line(gizmo_start, gizmo_start + elbow_vec * 0.1, Color::PURPLE);
+			gizmo.line(gizmo_start, gizmo_start + elbow_axis * 0.1, Color::YELLOW);
+			let hand_upper_arm_rot = Quat::from_axis_angle(elbow_axis, hand_upper_arm_angle).normalize();
+			let new_elbow_pos = hand_upper_arm_rot.mul_vec3(final_hand_rel_shoulder.normalize()*upper_arm_length);
 			// new new algorithm; do the roll seperately, by mapping (-1, 1, 0)
 			// calculation of the base rotation could theoretically be calculated at setup time
 			let uarm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].arm.lower.translation.normalize(), Vec3::Z);
-			let uarm_rot_final = Quat::from_rotation_arc(Vec3::Z, new_elbow_pos);
-			// theoretically splitting this should assist the introduction of roll correction, but currently serves no purpose
+			// I am very concerned about why this doesn't work as a rotation arc
+			let uarm_plus_z = new_elbow_pos.normalize();
+			let uarm_plus_x = orthonormalize(elbow_axis, uarm_plus_z);
+			let uarm_rot_final = quat_from_vectors(uarm_plus_x, uarm_plus_z);
+			gizmo_from_transform(Transform {translation: new_elbow_pos + root_skel_sides[i].arm.upper.translation, rotation: uarm_rot_final, scale: Vec3::ONE}, &mut gizmo);
 			let new_upper_arm_rot = (uarm_rot_final * uarm_rot_base).normalize();
 
 			if new_upper_arm_rot.x.is_nan() {
@@ -782,14 +830,27 @@ fn update_ik(
 			skeleton_sides[i].arm.upper.rotation = (arm_highest_root.rotation.inverse() * new_upper_arm_rot).normalize();
 			// next line is certified correct
 			let updated_root_upper_arm = arm_highest_root.mul_transform(skeleton_sides[i].arm.upper);
-			let larm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].hand.translation.normalize(), Vec3::Z).normalize();
 			let curr_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower).translation;
 			//let mut dislocation = curr_root_lower_arm - (new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation);
 			//if dislocation.length() > 0.01 {panic!("Ur arm math broke lol, dislocation  = {:?}", dislocation)}
 			//println!("Checking things: {:?}", (curr_root_lower_arm.translation, updated_root_upper_arm.translation, new_elbow_pos*upper_arm_length + updated_root_upper_arm.translation));
 			let target_hand_rel_elbow = final_hands[i].translation - curr_root_lower_arm;
-			let larm_rot_final = Quat::from_rotation_arc(Vec3::Z, target_hand_rel_elbow.normalize());
-			let new_lower_arm_rot = (larm_rot_final * larm_rot_base).normalize();
+			let larm_rot_base = Quat::from_rotation_arc(skeleton_sides[i].hand.translation.normalize(), Vec3::Z);
+
+			// let hand_plus_z: Vec3 = final_hands[i].rotation * Vec3::Z;
+			// let hand_plus_x: Vec3 = (final_hands[i].rotation * Vec3::X).normalize();
+			// x_sidez
+			let hand_plus_x: Vec3 = (final_hands[i].rotation * Vec3::Z * x_side).normalize();
+			let forearm_plus_z: Vec3 = (target_hand_rel_elbow).normalize();
+
+			let forearm_plus_x: Vec3 = orthonormalize(hand_plus_x, forearm_plus_z);
+
+
+			let forearm_rotation_global: Quat = quat_from_vectors(forearm_plus_x, forearm_plus_z);
+			gizmo_from_transform(Transform {translation: final_hands[i].translation, rotation: forearm_rotation_global, scale: Vec3::ONE}, &mut gizmo);
+
+
+			let new_lower_arm_rot = (forearm_rotation_global * larm_rot_base).normalize();
 			//if new_lower_arm_rot.x.is_nan() {panic!("lower arm rotation calculation failed")}
 			skeleton_sides[i].arm.lower.rotation = (updated_root_upper_arm.rotation.inverse() * new_lower_arm_rot).normalize();
 			let updated_root_lower_arm = updated_root_upper_arm.mul_transform(skeleton_sides[i].arm.lower);
@@ -802,7 +863,7 @@ fn update_ik(
 			if dislocation.length() > 0.05 {
 				panic!("Ur hand math (2) broke lol, dislocation  = {:?}", dislocation)
 			}*/
-			skeleton_sides[i].hand.rotation = (curr_root_hand.rotation.inverse() * (final_hands[i].rotation)).normalize();
+			skeleton_sides[i].hand.rotation = (curr_root_hand.rotation.inverse() * (final_hands[i].rotation * flip_quat_sides[i])).normalize();
 			// WOOOO!!!! OH YEAH BABY THAT'S EVERYTHING!!!!
 		}
 		drop(skeleton_sides); 

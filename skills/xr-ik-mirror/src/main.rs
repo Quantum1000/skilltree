@@ -10,9 +10,9 @@ use bevy::render::render_resource::{
 	Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
 };
 use bevy::transform::components::Transform;
-
 use bevy_oxr::input::XrInput;
 use bevy_oxr::resources::XrFrameState;
+use bevy_oxr::xr_input::trackers::OpenXRTrackingRoot;
 use bevy_oxr::xr_input::oculus_touch::OculusController;
 use bevy_oxr::xr_input::{QuatConv, Vec3Conv};
 use bevy_oxr::DefaultXrPlugins;
@@ -534,7 +534,7 @@ fn update_ik(
 			Ok(input) => {
 				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
 					let head_rot = input.0.pose.orientation.to_quat();
-					let in_pos = input.0.pose.position.to_vec3()*height_factor;
+					let in_pos = input.0.pose.position.to_vec3() * height_factor;
 					let head_offset = (skeleton.left.eye.translation + skeleton.right.eye.translation)/2.;
 					let head_pos = in_pos - head_rot * head_offset;
 					let transform = Transform {
@@ -542,7 +542,7 @@ fn update_ik(
 						rotation: head_rot,
 						scale: skeleton.head.scale,
 					};
-					gizmo_from_transform(transform.with_translation(in_pos).with_scale(Vec3::ONE*2.*Vec3::NEG_Z), &mut gizmo);
+					gizmo_from_transform(transform.with_translation(in_pos).with_scale(2.*Vec3::new(1., 1., -1.)), &mut gizmo);
 					transform
 				}
 				else {
@@ -557,7 +557,7 @@ fn update_ik(
 			Ok(input) => {
 				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
 					Transform {
-						translation: input.0.pose.position.to_vec3()*height_factor,
+						translation: input.0.pose.position.to_vec3() * height_factor,
 						rotation: input.0.pose.orientation.to_quat(),
 						scale: skeleton.left.hand.scale,
 					}
@@ -574,7 +574,7 @@ fn update_ik(
 			Ok(input) => {
 				if (input.0.location_flags.into_raw()&0b1111)^0b1111 == 0 {
 					Transform {
-						translation: input.0.pose.position.to_vec3()*height_factor,
+						translation: input.0.pose.position.to_vec3() * height_factor,
 						rotation: input.0.pose.orientation.to_quat(),
 						scale: skeleton.right.hand.scale,
 					}
@@ -905,7 +905,8 @@ fn update_ik(
 
 fn setup_ik(
 	mut commands: Commands,
-	transforms: Query<(&Transform, &GlobalTransform)>,
+	transforms: Query<(&Transform, &GlobalTransform, Without<OpenXRTrackingRoot>)>,
+	mut tracking_root: Query<(&mut Transform, With<OpenXRTrackingRoot>)>,
 	_meshes: ResMut<Assets<Mesh>>,
 	_materials: ResMut<Assets<StandardMaterial>>,
 	added_query: Query<(Entity, &AvatarSetup)>,
@@ -978,7 +979,7 @@ fn setup_ik(
 				return
 			},
 		};
-		// this next thing should really never fail, that would be very odd. I guess if root_t failed to load? Maybe? Surely that should just, error out though, right?
+		// this next thing should really never fail, that would be very odd.
 		let root_skel = match Skeleton::new(skeleton_root_array)
 		{
 			Ok(skel) => skel,
@@ -987,6 +988,10 @@ fn setup_ik(
 		println!("Hand forward is {:?}, up is {:?}", root_skel.left.hand.forward(), root_skel.left.hand.up());
 		let skeleton = SkeletonComponent {entities: entities, height: root_skel.head.translation.y*HEAD_HEIGHT_FACTOR, defaults: skel, root_defaults: root_skel};
 		if skeleton.height <= 0. {return};
+		let height_factor = skeleton.height / DEFAULT_HEAD_HEIGHT;
+		for mut root in tracking_root.iter_mut(){
+			root.0.scale = Vec3::ONE * height_factor;
+		}
 		commands.entity(entity).remove::<AvatarSetup>();
 		commands.entity(root).insert(skeleton);
 		println!("Succesfully added skeleton component to root")
